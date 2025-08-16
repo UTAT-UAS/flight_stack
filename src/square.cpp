@@ -56,6 +56,19 @@ using namespace std::chrono;
 using namespace std::chrono_literals;
 using namespace px4_msgs::msg;
 
+enum FlightState {
+	TAKEOFF,
+	CORNER0,
+	CORNER1,
+	CORNER2,
+	CORNER3,
+	LAND
+};
+
+#define SLEN 10
+#define HOV -5
+#define CORNER_TIME 10
+
 class OffboardControl : public rclcpp::Node
 {
 public:
@@ -100,25 +113,74 @@ public:
 			if (offboard_setpoint_counter_ == 10) {
 				// Change to Offboard mode after 10 setpoints
 				this->publish_vehicle_command(VehicleCommand::VEHICLE_CMD_DO_SET_MODE, 1, 6);
-
-				// // Arm the vehicle
-				// this->arm();
-			}
-
-			// offboard_control_mode needs to be paired with trajectory_setpoint
-			rclcpp::Time now = this->get_clock()->now();
-			rclcpp::Duration elapsed = now - start_time_;
-			if (elapsed.seconds() < 20.0) {
-				publish_offboard_control_mode();
-				publish_trajectory_setpoint(0, 0, -5);
-			} else {
-				land();
-				rclcpp::shutdown();
 			}
 
 			// stop the counter after reaching 11
 			if (offboard_setpoint_counter_ < 11) {
 				offboard_setpoint_counter_++;
+			}
+
+			rclcpp::Time now = this->get_clock()->now();
+			rclcpp::Duration elapsed = now - start_time_;
+
+			switch (flight_state_)
+			{
+			case FlightState::TAKEOFF:
+				if (elapsed.seconds() < 8.0) {
+					publish_offboard_control_mode();
+					publish_trajectory_setpoint(0, 0, HOV);
+				} else {
+					start_time_ = this->get_clock()->now();
+					flight_state_ = FlightState::CORNER0;
+				}
+				break;
+			case FlightState::CORNER0:
+				if (elapsed.seconds() < CORNER_TIME) {
+					publish_offboard_control_mode();
+					publish_trajectory_setpoint(-SLEN, 0, HOV);
+				} else {
+					start_time_ = this->get_clock()->now();
+					flight_state_ = FlightState::CORNER1;
+				}
+				break;
+			case FlightState::CORNER1:
+				if (elapsed.seconds() < CORNER_TIME) {
+					publish_offboard_control_mode();
+					publish_trajectory_setpoint(-SLEN, -SLEN, HOV);
+				} else {
+					start_time_ = this->get_clock()->now();
+					flight_state_ = FlightState::CORNER2;
+				}
+				break;
+			case FlightState::CORNER2:
+				if (elapsed.seconds() < CORNER_TIME) {
+					publish_offboard_control_mode();
+					publish_trajectory_setpoint(0, -SLEN, HOV);
+				} else {
+					start_time_ = this->get_clock()->now();
+					flight_state_ = FlightState::CORNER3;
+				}
+				break;
+			case FlightState::CORNER3:
+				if (elapsed.seconds() < CORNER_TIME) {
+					publish_offboard_control_mode();
+					publish_trajectory_setpoint(0, 0, HOV);
+				} else {
+					start_time_ = this->get_clock()->now();
+					flight_state_ = FlightState::LAND;
+				}
+				break;
+			case FlightState::LAND:
+				if (elapsed.seconds() < CORNER_TIME) {
+					publish_offboard_control_mode();
+					publish_trajectory_setpoint(0, 0, HOV);
+				} else {
+					land();
+					rclcpp::shutdown();
+				}
+				break;
+			default:
+				break;
 			}
 		};
 		timer_ = this->create_wall_timer(100ms, timer_callback);
@@ -134,6 +196,7 @@ private:
 	bool armed_ {false};
 	bool wait_arm_latch_ {false};
 	bool arming_latch_ {false};
+	enum FlightState flight_state_ { FlightState::TAKEOFF };
 
 	rclcpp::Publisher<OffboardControlMode>::SharedPtr offboard_control_mode_publisher_;
 	rclcpp::Publisher<TrajectorySetpoint>::SharedPtr trajectory_setpoint_publisher_;

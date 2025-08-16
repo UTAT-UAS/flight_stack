@@ -23,6 +23,16 @@ target_compile_features(hover PUBLIC c_std_99 cxx_std_17)  # Require C99 and C++
 install(TARGETS hover
   DESTINATION lib/${PROJECT_NAME})
 
+add_executable(square src/square.cpp)
+target_include_directories(square PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
+  $<INSTALL_INTERFACE:include>)
+ament_target_dependencies(square rclcpp px4_msgs)
+target_compile_features(square PUBLIC c_std_99 cxx_std_17)  # Require C99 and C++17
+
+install(TARGETS square
+  DESTINATION lib/${PROJECT_NAME})
+
 if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)
   # the following line skips the linter which checks for copyrights
