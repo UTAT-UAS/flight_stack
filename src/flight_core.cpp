@@ -21,7 +21,7 @@
 
 enum class CoreMode
 {
-    GOTO,
+    GOTO = 0,
     TRAJ,
     TRAJ_PATH,
     OVERRIDE,
@@ -63,6 +63,8 @@ public:
         goto_setpoint_subscriber_ = this->create_subscription<px4_msgs::msg::GotoSetpoint>("/uas/core/goto_setpoint", qos, std::bind(&FlightCore::goto_setpoint_callback, this, std::placeholders::_1));
         trajectory_setpoint_subscriber_ = this->create_subscription<px4_msgs::msg::TrajectorySetpoint>("/uas/core/trajectory_setpoint", qos, std::bind(&FlightCore::trajectory_setpoint_callback, this, std::placeholders::_1));
 
+        core_status_publisher_ = this->create_publisher<flight_stack_msgs::msg::CoreStatus>("/uas/core/status", 10);
+
         core_command_service_ = this->create_service<flight_stack_msgs::srv::CoreCommand>("/uas/core/command", std::bind(&FlightCore::core_command_callback, this, std::placeholders::_1, std::placeholders::_2));
 
         // Startup
@@ -90,8 +92,7 @@ private:
     const bool is_simulation_;
 
     bool drone_state_initalized_{false};
-    CoreMode core_mode_{
-        CoreMode::GOTO};
+    CoreMode core_mode_{CoreMode::GOTO};
 
     rclcpp::CallbackGroup::SharedPtr service_call_group_;
     rclcpp::CallbackGroup::SharedPtr subscriber_call_group_;
@@ -129,6 +130,9 @@ private:
     rclcpp::Subscription<px4_msgs::msg::TrajectorySetpoint>::SharedPtr trajectory_setpoint_subscriber_;
     void trajectory_setpoint_callback(px4_msgs::msg::TrajectorySetpoint::UniquePtr msg);
     px4_msgs::msg::TrajectorySetpoint::UniquePtr trajectory_setpoint_{};
+
+    rclcpp::Publisher<flight_stack_msgs::msg::CoreStatus>::SharedPtr core_status_publisher_;
+    void publish_status();
 
     rclcpp::Service<flight_stack_msgs::srv::CoreCommand>::SharedPtr core_command_service_;
     void core_command_callback(const std::shared_ptr<flight_stack_msgs::srv::CoreCommand::Request> request, std::shared_ptr<flight_stack_msgs::srv::CoreCommand::Response> response);
@@ -349,7 +353,7 @@ void FlightCore::core_command_callback(const std::shared_ptr<flight_stack_msgs::
     {
         while (vehicle_command_results_[request_id].done != true)
         {
-            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+            std::this_thread::yield();
         }
         const std::lock_guard<std::mutex> lock(vehicle_command_results_mutex_);
         if (vehicle_command_results_[request_id].result == px4_msgs::msg::VehicleCommandAck::VEHICLE_CMD_RESULT_ACCEPTED)
@@ -411,9 +415,18 @@ void FlightCore::trajectory_setpoint_callback(px4_msgs::msg::TrajectorySetpoint:
     trajectory_setpoint_ = std::move(msg);
 }
 
+void FlightCore::publish_status()
+{
+    flight_stack_msgs::msg::CoreStatus msg{};
+    msg.core_mode = (uint8_t)core_mode_;
+    msg.status = flight_stack_msgs::msg::CoreStatus::STATUS_NOMINAL;
+    core_status_publisher_->publish(msg);
+}
+
 void FlightCore::control_timer_callback()
 {
     publish_offboard_control_mode();
+    publish_status();
     switch (core_mode_)
     {
     case CoreMode::GOTO:
