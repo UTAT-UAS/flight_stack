@@ -16,6 +16,8 @@
 #include <iostream>
 #include <thread>
 #include <cmath>
+#include <mutex>
+#include <vector>
 
 enum class CoreMode
 {
@@ -24,6 +26,12 @@ enum class CoreMode
     TRAJ_PATH,
     OVERRIDE,
     OUT_OF_BOUNDS
+};
+
+struct VehicleCommandResult
+{
+    bool done;
+    uint8_t result;
 };
 
 class FlightCore : public rclcpp::Node
@@ -39,24 +47,25 @@ public:
         rmw_qos_profile_t qos_profile = rmw_qos_profile_sensor_data;
         auto qos = rclcpp::QoS(rclcpp::QoSInitialization(qos_profile.history, 5), qos_profile);
         service_call_group_ = create_callback_group(rclcpp::CallbackGroupType::Reentrant);
-        subscriber_call_group_ = create_callback_group(rclcpp::CallbackGroupType::Reentrant);
-        rclcpp::SubscriptionOptions subscription_options;
-        subscription_options.callback_group = subscriber_call_group_;
 
-        vehicle_status_subscription_ = this->create_subscription<px4_msgs::msg::VehicleStatus>("/fmu/out/vehicle_status_v1", qos, std::bind(&FlightCore::vehicle_status_subscription_callback, this, std::placeholders::_1), subscription_options);
-        vehicle_land_detected_subscription_ = this->create_subscription<px4_msgs::msg::VehicleLandDetected>("/fmu/out/vehicle_land_detected", qos, std::bind(&FlightCore::vehicle_land_detected_callback, this, std::placeholders::_1), subscription_options);
+        // PX4
+        vehicle_status_subscription_ = this->create_subscription<px4_msgs::msg::VehicleStatus>("/fmu/out/vehicle_status_v1", qos, std::bind(&FlightCore::vehicle_status_subscription_callback, this, std::placeholders::_1));
+        vehicle_land_detected_subscription_ = this->create_subscription<px4_msgs::msg::VehicleLandDetected>("/fmu/out/vehicle_land_detected", qos, std::bind(&FlightCore::vehicle_land_detected_callback, this, std::placeholders::_1));
 
         offboard_control_mode_publisher_ = this->create_publisher<px4_msgs::msg::OffboardControlMode>("/fmu/in/offboard_control_mode", 10);
         goto_setpoint_publisher_ = this->create_publisher<px4_msgs::msg::GotoSetpoint>("/fmu/in/goto_setpoint", 10);
         trajectory_setpoint_publisher_ = this->create_publisher<px4_msgs::msg::TrajectorySetpoint>("/fmu/in/trajectory_setpoint", 10);
 
+        // TODO: prune stale service requests
         vehicle_command_client_ = this->create_client<px4_msgs::srv::VehicleCommand>("/fmu/vehicle_command", rmw_qos_profile_services_default, service_call_group_);
 
+        // FlightCore
         goto_setpoint_subscriber_ = this->create_subscription<px4_msgs::msg::GotoSetpoint>("/uas/core/goto_setpoint", qos, std::bind(&FlightCore::goto_setpoint_callback, this, std::placeholders::_1));
         trajectory_setpoint_subscriber_ = this->create_subscription<px4_msgs::msg::TrajectorySetpoint>("/uas/core/trajectory_setpoint", qos, std::bind(&FlightCore::trajectory_setpoint_callback, this, std::placeholders::_1));
 
         core_command_service_ = this->create_service<flight_stack_msgs::srv::CoreCommand>("/uas/core/command", std::bind(&FlightCore::core_command_callback, this, std::placeholders::_1, std::placeholders::_2));
 
+        // Startup
         RCLCPP_INFO_STREAM(this->get_logger(), "Setting up FlightCore");
         RCLCPP_INFO_STREAM(this->get_logger(), "Waiting for " << "/fmu/" << "vehicle_command service");
         while (!vehicle_command_client_->wait_for_service(std::chrono::seconds(1)))
@@ -108,11 +117,10 @@ private:
     void publish_trajectory_setpoint_raw(px4_msgs::msg::TrajectorySetpoint msg);
 
     rclcpp::Client<px4_msgs::srv::VehicleCommand>::SharedPtr vehicle_command_client_;
-    void vehicle_command_request(uint16_t command, float param1, float param2);
-    void vehicle_command_callback(rclcpp::Client<px4_msgs::srv::VehicleCommand>::SharedFuture future);
-    bool vehicle_command_service_in_progress_{false};
-    bool vehicle_command_service_done_;
-    uint8_t service_result_;
+    int vehicle_command_request(uint16_t command, float param1, float param2);
+    void vehicle_command_callback(rclcpp::Client<px4_msgs::srv::VehicleCommand>::SharedFuture future, int id);
+    std::vector<VehicleCommandResult> vehicle_command_results_;
+    std::mutex vehicle_command_results_mutex_;
 
     // FlightCore pub/subs ...
     rclcpp::Subscription<px4_msgs::msg::GotoSetpoint>::SharedPtr goto_setpoint_subscriber_;
@@ -126,10 +134,10 @@ private:
     void core_command_callback(const std::shared_ptr<flight_stack_msgs::srv::CoreCommand::Request> request, std::shared_ptr<flight_stack_msgs::srv::CoreCommand::Response> response);
 
     // FlightCore functions
-    bool arm();
-    void disarm();
-    void land();
-    void mode(float mode);
+    int arm();
+    int disarm();
+    int land();
+    int mode(float mode);
 
     void control_timer_callback();
 };
@@ -209,7 +217,7 @@ void FlightCore::publish_trajectory_setpoint_raw(px4_msgs::msg::TrajectorySetpoi
     trajectory_setpoint_publisher_->publish(msg);
 }
 
-void FlightCore::vehicle_command_request(uint16_t command, float param1 = 0.0, float param2 = 0.0)
+int FlightCore::vehicle_command_request(uint16_t command, float param1 = 0.0, float param2 = 0.0)
 {
     auto request = std::make_shared<px4_msgs::srv::VehicleCommand::Request>();
 
@@ -225,21 +233,27 @@ void FlightCore::vehicle_command_request(uint16_t command, float param1 = 0.0, f
     msg.timestamp = this->get_clock()->now().nanoseconds() / 1000;
     request->request = msg;
 
-    vehicle_command_service_done_ = false;
-    auto result = vehicle_command_client_->async_send_request(request, std::bind(&FlightCore::vehicle_command_callback, this,
-                                                                                 std::placeholders::_1));
-    // RCLCPP_INFO(this->get_logger(), "Command send");
+    const std::lock_guard<std::mutex> lock(vehicle_command_results_mutex_);
+    vehicle_command_results_.push_back({false, 0});
+    int id = vehicle_command_results_.size() - 1;
+    auto callback_wrapper = [id, this](rclcpp::Client<px4_msgs::srv::VehicleCommand>::SharedFuture future)
+    {
+        this->vehicle_command_callback(future, id);
+    };
+    auto result = vehicle_command_client_->async_send_request(request, std::move(callback_wrapper));
+    return id;
 }
 
 void FlightCore::vehicle_command_callback(
-    rclcpp::Client<px4_msgs::srv::VehicleCommand>::SharedFuture future)
+    rclcpp::Client<px4_msgs::srv::VehicleCommand>::SharedFuture future, int id)
 {
     auto status = future.wait_for(std::chrono::seconds(1));
     if (status == std::future_status::ready)
     {
+        const std::lock_guard<std::mutex> lock(vehicle_command_results_mutex_);
         auto reply = future.get()->reply;
-        service_result_ = reply.result;
-        switch (service_result_)
+        vehicle_command_results_[id].result = reply.result; // is this actually thread safe?
+        switch (reply.result)
         {
         case reply.VEHICLE_CMD_RESULT_ACCEPTED:
             RCLCPP_INFO(this->get_logger(), "command accepted");
@@ -266,7 +280,7 @@ void FlightCore::vehicle_command_callback(
             RCLCPP_WARN(this->get_logger(), "command reply unknown");
             break;
         }
-        vehicle_command_service_done_ = true;
+        vehicle_command_results_[id].done = true;
     }
     else
     {
@@ -280,32 +294,39 @@ void FlightCore::core_command_callback(const std::shared_ptr<flight_stack_msgs::
     auto request = request_msg->request;
     response->reply.command = request.command;
 
-    if (vehicle_command_service_in_progress_ == true)
-    {
-        response->reply.result = response->reply.RESULT_FAILURE_PROG;
-        return;
-    }
+    int request_id;
+    bool service_called{false};
 
     switch (request.command)
     {
     case request.ARM:
-        if (arm() == false)
+        if (is_simulation_ == false)
         {
             response->reply.result = response->reply.RESULT_FAILURE;
             return;
         }
+        request_id = arm();
+        service_called = true;
         break;
     case request.DISARM:
-        disarm();
+        request_id = disarm();
+        service_called = true;
         break;
     case request.MODE_OFFBOARD:
-        mode(6.0);
+        request_id = mode(6.0);
+        service_called = true;
         break;
     case request.MODE_POSCTL:
-        mode(3.0);
+        request_id = mode(3.0);
+        service_called = true;
         break;
     case request.MODE_ALTCTL:
-        mode(2.0);
+        request_id = mode(2.0);
+        service_called = true;
+        break;
+    case request.MODE_LAND:
+        request_id = land();
+        service_called = true;
         break;
     case request.CORE_GOTO:
         core_mode_ = CoreMode::GOTO;
@@ -324,41 +345,53 @@ void FlightCore::core_command_callback(const std::shared_ptr<flight_stack_msgs::
         return;
     }
 
-    while (vehicle_command_service_done_ == false)
+    if (service_called == true)
     {
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
-    }
-    if (service_result_ == px4_msgs::msg::VehicleCommandAck::VEHICLE_CMD_RESULT_ACCEPTED)
-    {
-        response->reply.result = response->reply.RESULT_SUCCESS;
+        while (vehicle_command_results_[request_id].done != true)
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        }
+        const std::lock_guard<std::mutex> lock(vehicle_command_results_mutex_);
+        if (vehicle_command_results_[request_id].result == px4_msgs::msg::VehicleCommandAck::VEHICLE_CMD_RESULT_ACCEPTED)
+        {
+            response->reply.result = response->reply.RESULT_SUCCESS;
+        }
+        else
+        {
+            response->reply.result = response->reply.RESULT_FAILURE;
+        }
+        vehicle_command_results_.erase(vehicle_command_results_.begin() + request_id);
+        switch (request.command)
+        {
+        case request.MODE_LAND:
+            core_mode_ = CoreMode::OVERRIDE;
+            break;
+        default:
+            break;
+        }
     }
     else
     {
-        response->reply.result = response->reply.RESULT_FAILURE;
+        response->reply.result = response->reply.RESULT_SUCCESS;
     }
 }
 
-bool FlightCore::arm()
+int FlightCore::arm()
 {
-    if (is_simulation_ == false)
-    {
-        return false;
-    }
-    vehicle_command_request(px4_msgs::msg::VehicleCommand::VEHICLE_CMD_COMPONENT_ARM_DISARM, 1.0);
-    return true;
+    return vehicle_command_request(px4_msgs::msg::VehicleCommand::VEHICLE_CMD_COMPONENT_ARM_DISARM, 1.0);
 }
 
-void FlightCore::disarm()
+int FlightCore::disarm()
 {
-    vehicle_command_request(px4_msgs::msg::VehicleCommand::VEHICLE_CMD_COMPONENT_ARM_DISARM, 0.0);
+    return vehicle_command_request(px4_msgs::msg::VehicleCommand::VEHICLE_CMD_COMPONENT_ARM_DISARM, 0.0);
 }
 
-void FlightCore::land()
+int FlightCore::land()
 {
-    vehicle_command_request(px4_msgs::msg::VehicleCommand::VEHICLE_CMD_NAV_LAND, 1.0);
+    return vehicle_command_request(px4_msgs::msg::VehicleCommand::VEHICLE_CMD_NAV_LAND, 1.0);
 }
 
-void FlightCore::mode(float mode)
+int FlightCore::mode(float mode)
 {
     // Best explanation I could find here: https://discuss.px4.io/t/switching-modes-in-px4-using-ros2-and-uxrce-dds/37137
     // param1 = 1 for px4 custom modes
@@ -366,7 +399,7 @@ void FlightCore::mode(float mode)
     // 2 -- ALTCTL
     // 3 -- POSCTL
     // 6 -- OFFBOARD
-    vehicle_command_request(px4_msgs::msg::VehicleCommand::VEHICLE_CMD_DO_SET_MODE, 1.0, mode);
+    return vehicle_command_request(px4_msgs::msg::VehicleCommand::VEHICLE_CMD_DO_SET_MODE, 1.0, mode);
 }
 
 void FlightCore::goto_setpoint_callback(px4_msgs::msg::GotoSetpoint::UniquePtr msg)
