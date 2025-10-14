@@ -1,156 +1,54 @@
-#include <px4_msgs/msg/offboard_control_mode.hpp>
-#include <px4_msgs/msg/trajectory_setpoint.hpp>
-#include <px4_msgs/msg/goto_setpoint.hpp>
-#include <px4_msgs/msg/trajectory_setpoint.hpp>
-#include <px4_msgs/msg/vehicle_command.hpp>
-#include <px4_msgs/msg/vehicle_status.hpp>
-#include <px4_msgs/msg/vehicle_land_detected.hpp>
-#include <px4_msgs/srv/vehicle_command.hpp>
-#include <flight_stack_msgs/srv/core_command.hpp>
-#include <flight_stack_msgs/msg/core_status.hpp>
-#include <rclcpp/rclcpp.hpp>
-#include <stdint.h>
+#include "flight_stack/flight_core.hpp"
 
-#include <chrono>
-#include <optional>
-#include <iostream>
-#include <thread>
-#include <cmath>
-
-enum class CoreMode
+FlightCore::FlightCore(bool is_simulation = false) : Node("flight_core"), is_simulation_{is_simulation}
 {
-    GOTO = 0,
-    TRAJ,
-    TRAJ_PATH,
-    OVERRIDE,
-    OUT_OF_BOUNDS
-};
-
-class FlightCore : public rclcpp::Node
-{
-public:
-    explicit FlightCore(bool is_simulation = false) : Node("flight_core"), is_simulation_{is_simulation}
+    if (is_simulation_)
     {
-        if (is_simulation_)
-        {
-            RCLCPP_WARN(this->get_logger(), "Running in simulation mode!");
-        }
-
-        rmw_qos_profile_t qos_profile = rmw_qos_profile_sensor_data;
-        auto qos = rclcpp::QoS(rclcpp::QoSInitialization(qos_profile.history, 5), qos_profile);
-
-        // PX4
-        vehicle_status_subscription_ = this->create_subscription<px4_msgs::msg::VehicleStatus>("/fmu/out/vehicle_status_v1", qos, std::bind(&FlightCore::vehicle_status_subscription_callback, this, std::placeholders::_1));
-        vehicle_land_detected_subscription_ = this->create_subscription<px4_msgs::msg::VehicleLandDetected>("/fmu/out/vehicle_land_detected", qos, std::bind(&FlightCore::vehicle_land_detected_callback, this, std::placeholders::_1));
-
-        offboard_control_mode_publisher_ = this->create_publisher<px4_msgs::msg::OffboardControlMode>("/fmu/in/offboard_control_mode", 10);
-        goto_setpoint_publisher_ = this->create_publisher<px4_msgs::msg::GotoSetpoint>("/fmu/in/goto_setpoint", 10);
-        trajectory_setpoint_publisher_ = this->create_publisher<px4_msgs::msg::TrajectorySetpoint>("/fmu/in/trajectory_setpoint", 10);
-
-        // TODO: prune stale service requests
-        vehicle_command_client_ = this->create_client<px4_msgs::srv::VehicleCommand>("/fmu/vehicle_command", rmw_qos_profile_services_default);
-
-        // FlightCore
-        goto_setpoint_subscriber_ = this->create_subscription<px4_msgs::msg::GotoSetpoint>("/uas/core/goto_setpoint", qos, std::bind(&FlightCore::goto_setpoint_callback, this, std::placeholders::_1));
-        trajectory_setpoint_subscriber_ = this->create_subscription<px4_msgs::msg::TrajectorySetpoint>("/uas/core/trajectory_setpoint", qos, std::bind(&FlightCore::trajectory_setpoint_callback, this, std::placeholders::_1));
-
-        core_status_publisher_ = this->create_publisher<flight_stack_msgs::msg::CoreStatus>("/uas/core/status", 10);
-
-        core_command_service_ = this->create_service<flight_stack_msgs::srv::CoreCommand>("/uas/core/command", std::bind(&FlightCore::core_command_callback, this, std::placeholders::_1, std::placeholders::_2, std::placeholders::_3));
-
-        // Startup
-        RCLCPP_INFO_STREAM(this->get_logger(), "Setting up FlightCore");
-        RCLCPP_INFO_STREAM(this->get_logger(), "Waiting for " << "/fmu/" << "vehicle_command service");
-        while (!vehicle_command_client_->wait_for_service(std::chrono::seconds(1)))
-        {
-            if (!rclcpp::ok())
-            {
-                RCLCPP_ERROR(this->get_logger(), "Interrupted while waiting. Exiting.");
-                return;
-            }
-            RCLCPP_INFO(this->get_logger(), "service not available, waiting again...");
-        }
-        RCLCPP_INFO_STREAM(this->get_logger(), "Starting control loop");
-
-        control_timer_ = this->create_wall_timer(std::chrono::milliseconds(20),
-                                                 [this]() -> void
-                                                 {
-                                                     this->control_timer_callback();
-                                                 });
+        RCLCPP_WARN(this->get_logger(), "Running in simulation mode!");
     }
 
-private:
-    const bool is_simulation_;
+    rmw_qos_profile_t qos_profile = rmw_qos_profile_sensor_data;
+    auto qos = rclcpp::QoS(rclcpp::QoSInitialization(qos_profile.history, 5), qos_profile);
 
-    bool drone_state_initalized_{false};
-    CoreMode core_mode_{CoreMode::GOTO};
+    // PX4
+    vehicle_status_subscription_ = this->create_subscription<px4_msgs::msg::VehicleStatus>("/fmu/out/vehicle_status_v1", qos, std::bind(&FlightCore::vehicle_status_subscription_callback, this, std::placeholders::_1));
+    vehicle_land_detected_subscription_ = this->create_subscription<px4_msgs::msg::VehicleLandDetected>("/fmu/out/vehicle_land_detected", qos, std::bind(&FlightCore::vehicle_land_detected_callback, this, std::placeholders::_1));
 
-    rclcpp::CallbackGroup::SharedPtr service_call_group_;
-    rclcpp::CallbackGroup::SharedPtr subscriber_call_group_;
-    rclcpp::TimerBase::SharedPtr control_timer_;
+    offboard_control_mode_publisher_ = this->create_publisher<px4_msgs::msg::OffboardControlMode>("/fmu/in/offboard_control_mode", 10);
+    goto_setpoint_publisher_ = this->create_publisher<px4_msgs::msg::GotoSetpoint>("/fmu/in/goto_setpoint", 10);
+    trajectory_setpoint_publisher_ = this->create_publisher<px4_msgs::msg::TrajectorySetpoint>("/fmu/in/trajectory_setpoint", 10);
 
-    // PX4 pub/subs ...
-    rclcpp::Subscription<px4_msgs::msg::VehicleStatus>::SharedPtr vehicle_status_subscription_;
-    void vehicle_status_subscription_callback(px4_msgs::msg::VehicleStatus::UniquePtr msg);
-    bool vehicle_status_initialized_{false};
-    bool is_armed_;
-    bool is_offboard_;
-    rclcpp::Subscription<px4_msgs::msg::VehicleLandDetected>::SharedPtr vehicle_land_detected_subscription_;
-    void vehicle_land_detected_callback(px4_msgs::msg::VehicleLandDetected::UniquePtr msg);
-    bool vehicle_land_detected_initialized_{false};
-    bool is_landed_;
+    // TODO: prune stale service requests
+    vehicle_command_client_ = this->create_client<px4_msgs::srv::VehicleCommand>("/fmu/vehicle_command", rmw_qos_profile_services_default);
 
-    rclcpp::Publisher<px4_msgs::msg::OffboardControlMode>::SharedPtr offboard_control_mode_publisher_;
-    void publish_offboard_control_mode();
-    rclcpp::Publisher<px4_msgs::msg::GotoSetpoint>::SharedPtr goto_setpoint_publisher_;
-    void publish_goto_setpoint(float x, float y, float z, std::optional<float> heading);
-    void publish_goto_setpoint_raw(px4_msgs::msg::GotoSetpoint msg);
-    rclcpp::Publisher<px4_msgs::msg::TrajectorySetpoint>::SharedPtr trajectory_setpoint_publisher_;
-    void publish_trajectory_setpoint_raw(px4_msgs::msg::TrajectorySetpoint msg);
+    // FlightCore
+    goto_setpoint_subscriber_ = this->create_subscription<px4_msgs::msg::GotoSetpoint>("/uas/core/goto_setpoint", qos, std::bind(&FlightCore::goto_setpoint_callback, this, std::placeholders::_1));
+    trajectory_setpoint_subscriber_ = this->create_subscription<px4_msgs::msg::TrajectorySetpoint>("/uas/core/trajectory_setpoint", qos, std::bind(&FlightCore::trajectory_setpoint_callback, this, std::placeholders::_1));
 
-    rclcpp::Client<px4_msgs::srv::VehicleCommand>::SharedPtr vehicle_command_client_;
-    void vehicle_command_request(uint16_t command, float param1, float param2);
-    void vehicle_command_callback(rclcpp::Client<px4_msgs::srv::VehicleCommand>::SharedFuture future);
-    void vehicle_command_request(std::shared_ptr<rclcpp::Service<flight_stack_msgs::srv::CoreCommand>> service,
-                                 const std::shared_ptr<rmw_request_id_t> request_header,
-                                 uint16_t command, float param1, float param2);
-    void vehicle_command_callback(std::shared_ptr<rclcpp::Service<flight_stack_msgs::srv::CoreCommand>> service,
-                                  const std::shared_ptr<rmw_request_id_t> request_header,
-                                  rclcpp::Client<px4_msgs::srv::VehicleCommand>::SharedFuture future);
+    core_status_publisher_ = this->create_publisher<flight_stack_msgs::msg::CoreStatus>("/uas/core/status", 10);
 
-    // FlightCore pub/subs ...
-    rclcpp::Subscription<px4_msgs::msg::GotoSetpoint>::SharedPtr goto_setpoint_subscriber_;
-    void goto_setpoint_callback(px4_msgs::msg::GotoSetpoint::UniquePtr msg);
-    px4_msgs::msg::GotoSetpoint::UniquePtr goto_setpoint_{};
-    rclcpp::Subscription<px4_msgs::msg::TrajectorySetpoint>::SharedPtr trajectory_setpoint_subscriber_;
-    void trajectory_setpoint_callback(px4_msgs::msg::TrajectorySetpoint::UniquePtr msg);
-    px4_msgs::msg::TrajectorySetpoint::UniquePtr trajectory_setpoint_{};
+    core_command_service_ = this->create_service<flight_stack_msgs::srv::CoreCommand>("/uas/core/command", std::bind(&FlightCore::core_command_callback, this, std::placeholders::_1, std::placeholders::_2, std::placeholders::_3));
 
-    rclcpp::Publisher<flight_stack_msgs::msg::CoreStatus>::SharedPtr core_status_publisher_;
-    void publish_status();
+    // Startup
+    RCLCPP_INFO_STREAM(this->get_logger(), "Setting up FlightCore");
+    RCLCPP_INFO_STREAM(this->get_logger(), "Waiting for " << "/fmu/" << "vehicle_command service");
+    while (!vehicle_command_client_->wait_for_service(std::chrono::seconds(1)))
+    {
+        if (!rclcpp::ok())
+        {
+            RCLCPP_ERROR(this->get_logger(), "Interrupted while waiting. Exiting.");
+            return;
+        }
+        RCLCPP_INFO(this->get_logger(), "service not available, waiting again...");
+    }
+    RCLCPP_INFO_STREAM(this->get_logger(), "Starting control loop");
 
-    rclcpp::Service<flight_stack_msgs::srv::CoreCommand>::SharedPtr core_command_service_;
-    void core_command_callback(std::shared_ptr<rclcpp::Service<flight_stack_msgs::srv::CoreCommand>> service,
-                               const std::shared_ptr<rmw_request_id_t> request_header,
-                               const std::shared_ptr<flight_stack_msgs::srv::CoreCommand::Request> request_msg);
-
-    // FlightCore functions
-    void arm();
-    void disarm();
-    void land();
-    void mode(float mode);
-    void arm(std::shared_ptr<rclcpp::Service<flight_stack_msgs::srv::CoreCommand>> service,
-             const std::shared_ptr<rmw_request_id_t> request_header);
-    void disarm(std::shared_ptr<rclcpp::Service<flight_stack_msgs::srv::CoreCommand>> service,
-                const std::shared_ptr<rmw_request_id_t> request_header);
-    void land(std::shared_ptr<rclcpp::Service<flight_stack_msgs::srv::CoreCommand>> service,
-              const std::shared_ptr<rmw_request_id_t> request_header);
-    void mode(std::shared_ptr<rclcpp::Service<flight_stack_msgs::srv::CoreCommand>> service,
-              const std::shared_ptr<rmw_request_id_t> request_header,
-              float mode);
-
-    void control_timer_callback();
-};
+    control_timer_ = this->create_wall_timer(std::chrono::milliseconds(20),
+                                             [this]() -> void
+                                             {
+                                                 this->control_timer_callback();
+                                             });
+}
 
 void FlightCore::vehicle_status_subscription_callback(px4_msgs::msg::VehicleStatus::UniquePtr msg)
 {
@@ -546,26 +444,3 @@ Cold start  - Discard all previous state that may exist. Effectively run assumin
 Resume      - Use previous state when starting, assume same flight manager was running before (previous process was either killed or crashed)
 Warm start  - Use previous state when starting, known (not same) flight manager was running before
 */
-
-int main(int argc, char *argv[])
-{
-    bool is_simulation = false;
-    for (int i = 0; i < argc; i++)
-    {
-        if (std::string(argv[i]) == "--simulation")
-        {
-            is_simulation = true;
-        }
-    }
-
-    std::cout << "Starting FlightCore node..." << std::endl;
-    setvbuf(stdout, NULL, _IONBF, BUFSIZ);
-    rclcpp::init(argc, argv);
-    rclcpp::Node::SharedPtr node1 = std::make_shared<FlightCore>(is_simulation);
-    rclcpp::executors::SingleThreadedExecutor executor;
-    executor.add_node(node1);
-    executor.spin();
-
-    rclcpp::shutdown();
-    return 0;
-}

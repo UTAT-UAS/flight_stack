@@ -18,14 +18,14 @@ find_package(rclpy REQUIRED)
 
 # include_directories(include)
 
-add_executable(flight_core src/flight_core.cpp)
-target_include_directories(flight_core PUBLIC
+add_executable(flight_core_node src/flight_core_node.cpp src/flight_core.cpp)
+target_include_directories(flight_core_node PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include>)
-ament_target_dependencies(flight_core rclcpp px4_msgs flight_stack_msgs)
-target_compile_features(flight_core PUBLIC c_std_99 cxx_std_17)  # Require C99 and C++17
+ament_target_dependencies(flight_core_node rclcpp px4_msgs flight_stack_msgs)
+target_compile_features(flight_core_node PUBLIC c_std_99 cxx_std_17)  # Require C99 and C++17
 
-install(TARGETS flight_core
+install(TARGETS flight_core_node
   DESTINATION lib/${PROJECT_NAME})
 
 if(BUILD_TESTING)
