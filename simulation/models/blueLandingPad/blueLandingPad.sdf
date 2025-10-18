@@ -1,0 +1,17 @@
+<?xml version='1.0'?>
+<sdf version='1.5'>
+  <model name='blueLandingPad'>
+    <static>true</static>
+    <link name="link">
+      <visual name="visual">
+        <geometry>
+          <mesh>
+            <uri>model://blueLandingPad/blueLandingPad.dae</uri>
+            <scale>0.505834 0.505834 0.505834</scale>
+          </mesh>
+        </geometry>
+      </visual>
+
+    </link>
+  </model>
+</sdf>

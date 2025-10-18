@@ -2,13 +2,13 @@
 
 import rclpy
 
-from flight_stack.flight_stack import FlightStack
+from flight_stack.flight_stack import FlightPlanner
 
 
 def main(args=None):
     rclpy.init(args=args)
 
-    minimal_publisher = FlightStack()
+    minimal_publisher = FlightPlanner()
 
     rclpy.spin(minimal_publisher)
 

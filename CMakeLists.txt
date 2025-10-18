@@ -46,6 +46,7 @@ ament_python_install_package(${PROJECT_NAME})
 
 install(PROGRAMS
   scripts/pub.py
+  scripts/landing_pad.py
   DESTINATION lib/${PROJECT_NAME}
 )
 
