@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-GZ_DIR=~/PX4-Autopilot/Tools/simulation/gz
+GZ_DIR=/build/PX4-Autopilot/Tools/simulation/gz
 
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" &>/dev/null && pwd)
 

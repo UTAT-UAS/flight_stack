@@ -1,0 +1,17 @@
+# /home/uas/.config/tmuxinator/flight_stack.yml
+
+name: fs
+root: ~/workspace/uas_ws
+
+windows:
+  - px4:
+      layout: main-vertical
+      panes:
+        - ./src/flight_stack/util/link_worlds.sh && cd /build/PX4-Autopilot && PX4_GZ_WORLD=landing_pad make px4_sitl gz_x500_mono_cam_down
+        - MicroXRCEAgent udp4 -p 8888
+  - qgc: qgc
+  - web:
+      layout: main-vertical
+      panes:
+        - gst-webrtc-signalling-server --port 8443
+        - ros2 run rosbridge_server rosbridge_websocket --port 8080

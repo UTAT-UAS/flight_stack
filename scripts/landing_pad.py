@@ -48,7 +48,7 @@ class LandingPadStack(FlightPlanner):
             command = CoreCommand.Request()
             command.request.command = 5
             self._core_command_client.call_async(command)
-            rclpy.shutdown()
+            exit()
         if self.is_veritcalish() and time.time() - self.time > 8:
             print("descend")
             goto = GotoSetpoint()
