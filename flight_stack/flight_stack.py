@@ -3,6 +3,7 @@ from rclpy.qos import QoSPresetProfiles
 
 from px4_msgs.msg import (
     GotoSetpoint,
+    TrajectorySetpoint,
     VehicleAttitude,
     VehicleStatus,
     VehicleLocalPosition,
@@ -37,6 +38,10 @@ class FlightPlanner(Node):
 
         self._goto_publisher = self.create_publisher(
             GotoSetpoint, "/uas/core/goto_setpoint", 10
+        )
+
+        self._traj_publisher = self.create_publisher(
+            TrajectorySetpoint, "/uas/core/trajectory_setpoint", 10
         )
 
         self._core_command_client = self.create_client(CoreCommand, "/uas/core/command")
