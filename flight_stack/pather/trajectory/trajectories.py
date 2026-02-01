@@ -1,11 +1,12 @@
 import math
 
 from bisect import bisect_right
-from typing import Union, List
+from typing import TypeVar, Union, List
 import numpy as np
 
 def norm(v: np.ndarray): return v / np.linalg.norm(v)
 
+_T = TypeVar("_T", bound="Trajectory")
 class Trajectory():
     def __init__(self):
         self.next = None  # type: Trajectory | None
@@ -19,6 +20,16 @@ class Trajectory():
         def velocity(t: Union[int, float, np.number]):
             return self.endpoint
         self.velocity = velocity
+    
+    def append(self, x: _T):
+        nxt = self.next
+        while nxt is not None:
+            nxt = nxt.next
+        nxt.next = x
+    
+    def prepend(self, x: _T):
+        x.next = self
+        return x
 
 class Custom(Trajectory):
     def __init__(self, path, velocity, endpoint: np.ndarray, duration: Union[int, float, np.number]):
@@ -77,7 +88,7 @@ class Circle(Trajectory):
             self,
             start: np.ndarray,
             center: np.ndarray,  # position vector to axis
-            duration: Union[int, float, np.number],
+            cycles: Union[int, float, np.number],
             axis: np.ndarray = np.array([0,0,1]),
             speed: Union[int, float, np.number] = 1):
         super().__init__()
@@ -92,7 +103,8 @@ class Circle(Trajectory):
         ])
         dilation = speed / np.linalg.norm(diff_orth)
 
-        endpoint = center + math.cos(dilation * duration) * diff_orth + math.sin(dilation * duration) * w
+        endpoint = center + math.cos(2 * math.pi * cycles) * diff_orth + math.sin(2 * math.pi * cycles) * w
+        duration = 2 * math.pi * cycles / dilation
         def path(t: Union[int, float, np.number]):
             if t < duration:
                 return center + math.cos(dilation * t) * diff_orth + math.sin(dilation * t) * w
@@ -317,13 +329,13 @@ class Amongus(Trajectory):
         ellipse_dur = self.ellipse_duration(start=start, center=start - x*v_dir, cross_axis=3*x*h_dir, axis=np.array([0,0,1]), max_velocity=1)
         trajs = [
             Ellipse(start=start, center=start + x*v_dir, cross_axis=3*x*h_dir, duration=ellipse_dur),
-            Circle(start=start, center=start + r*h_dir, duration=math.pi*r)
+            Circle(start=start, center=start + r*h_dir, cycles=0.5)
         ]
-        trajs.append(Circle(start=trajs[-1].endpoint, center=trajs[-1].endpoint + r/3*v_dir, duration=math.pi*r/6))
+        trajs.append(Circle(start=trajs[-1].endpoint, center=trajs[-1].endpoint + r/3*v_dir, cycles=0.25))
         trajs.append(Line(start=trajs[-1].endpoint, end=trajs[-1].endpoint + y*v_dir, duration=y))
-        trajs.append(Circle(start=trajs[-1].endpoint, center=trajs[-1].endpoint - r/3*h_dir, duration=math.pi*r/6))
-        trajs.append(Circle(start=trajs[-1].endpoint, center=trajs[-1].endpoint - r/2*h_dir, duration=math.pi*r/2))
-        trajs.append(Circle(start=trajs[-1].endpoint, center=trajs[-1].endpoint - r/2*h_dir, duration=math.pi*r/2))
+        trajs.append(Circle(start=trajs[-1].endpoint, center=trajs[-1].endpoint - r/3*h_dir, cycles=0.25))
+        trajs.append(Circle(start=trajs[-1].endpoint, center=trajs[-1].endpoint - r/2*h_dir, cycles=0.5))
+        trajs.append(Circle(start=trajs[-1].endpoint, center=trajs[-1].endpoint - r/2*h_dir, cycles=0.5))
         trajs.append(Line(start=trajs[-1].endpoint, end=trajs[-1].endpoint - 3*x*v_dir, duration=3*x))
         trajs.append(Ellipse(start=trajs[-1].endpoint, center=trajs[-1].endpoint - x*v_dir, cross_axis=3*x*h_dir, duration=ellipse_dur/2))
 
@@ -372,16 +384,16 @@ class AmongusHigherRes(Trajectory):
             Ellipse(start=start, center=start + 1.2*r*h_dir, cross_axis=-r*v_dir, duration=ellipse_dur_scalp/2)
         ]  # type: List[Trajectory]
         # Back
-        trajs.append(Circle(start=trajs[-1].endpoint, center=trajs[-1].endpoint + 2*r/3*v_dir, duration=math.pi*r/3, axis=normal))
+        trajs.append(Circle(start=trajs[-1].endpoint, center=trajs[-1].endpoint + 2*r/3*v_dir, cycles=0.25, axis=normal))
         trajs.append(Line(start=trajs[-1].endpoint, end=trajs[-1].endpoint + y*v_dir, duration=y))
-        trajs.append(Circle(start=trajs[-1].endpoint, center=trajs[-1].endpoint - 2*r/3*h_dir, duration=math.pi*r/3, axis=normal))
+        trajs.append(Circle(start=trajs[-1].endpoint, center=trajs[-1].endpoint - 2*r/3*h_dir, cycles=0.25, axis=normal))
         trajs.append(Line(start=trajs[-1].endpoint, end=trajs[-1].endpoint + z*v_dir, duration=z))
         # Legs
-        trajs.append(Circle(start=trajs[-1].endpoint, center=trajs[-1].endpoint - 0.9*r/2*h_dir, duration=0.9*math.pi*r/2, axis=normal))
+        trajs.append(Circle(start=trajs[-1].endpoint, center=trajs[-1].endpoint - 0.9*r/2*h_dir, cycles=0.5, axis=normal))
         trajs.append(Line(start=trajs[-1].endpoint, end=trajs[-1].endpoint - z*v_dir, duration=z))
         trajs.append(Line(start=trajs[-1].endpoint, end=trajs[-1].endpoint - 0.6*r*h_dir, duration=0.6*r))
         trajs.append(Line(start=trajs[-1].endpoint, end=trajs[-1].endpoint + z*v_dir, duration=z))
-        trajs.append(Circle(start=trajs[-1].endpoint, center=trajs[-1].endpoint - 0.9*r/2*h_dir, duration=0.9*math.pi*r/2, axis=normal))
+        trajs.append(Circle(start=trajs[-1].endpoint, center=trajs[-1].endpoint - 0.9*r/2*h_dir, cycles=0.5, axis=normal))
         # Return
         trajs.append(Line(start=trajs[-1].endpoint, end=trajs[-1].endpoint - 3*x*v_dir, duration=3*x))
         trajs.append(Ellipse(start=trajs[-1].endpoint, center=trajs[-1].endpoint - x*v_dir + 1.5*x*h_dir, cross_axis=-x*v_dir - 1.5*x*h_dir, duration=ellipse_dur_goggles/4))
