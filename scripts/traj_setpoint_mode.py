@@ -14,7 +14,7 @@ from px4_msgs.msg import TrajectorySetpoint, VehicleStatus
 
 from flight_stack.pather import trajectory
 
-class LandingPadStack(FlightPlanner):
+class TrajBenchmarkStack(FlightPlanner):
     def __init__(self):
         super().__init__()
         self.point = Point()
@@ -27,6 +27,7 @@ class LandingPadStack(FlightPlanner):
         self.period = 0.2
         self.traj = trajectory.AmongusHigherRes(np.array([self._position.x, self._position.y, self._position.z]))
         self.pathtime = 0
+        self.duration = 0
         self.goto = TrajectorySetpoint()
 
     def main_loop(self):
@@ -34,7 +35,21 @@ class LandingPadStack(FlightPlanner):
             if time.time() - self.time < 2:  # lazy
                 return
 
-            self.traj = trajectory.AmongusHigherRes(np.array([self._position.x, self._position.y, self._position.z]), scale=40)
+            x, y, z = self._position.x, self._position.y, self._position.z
+            paths = [
+                trajectory.Line(np.array([x, y, z]), np.array([x, y + 10, z]), duration=10),
+                trajectory.Circle(np.array([x, y + 10, z]), np.array([x + 5, y + 10, z]), cycles=0.5, axis=np.array([0, 0, -1])),
+                trajectory.Circle(np.array([x + 10, y + 10, z]), np.array([x + 12, y + 10, z]), cycles=1),
+                trajectory.Line(np.array([x + 10, y + 10, z]), np.array([x + 10, y - 10, z]), duration=20),
+                trajectory.Line(np.array([x + 10, y - 10, z]), np.array([x + 15, y - 15, z]), duration=50**0.5),
+                trajectory.Line(np.array([x + 15, y - 15, z]), np.array([x + 30, y, z]), duration=450**0.5),
+                trajectory.Line(np.array([x + 30, y, z]), np.array([x, y, z]), duration=30),
+            ]
+            for i, traj in enumerate(paths[:-1]):
+                traj.next = paths[i + 1]
+                self.duration += traj.duration
+            self.duration += paths[-1].duration
+            self.traj = paths[0]
             self.goto.position = [self._position.x, self._position.y, self._position.z]
             self.goto.velocity = [0.0, 0.0, 0.0]
             print(self.goto.position)
@@ -54,7 +69,7 @@ class LandingPadStack(FlightPlanner):
                 command.request.command = 2
                 self._core_command_client.call_async(command)
                 self.requested = True
-        if self.pathtime > self.traj.duration - 1:
+        if self.pathtime > self.duration - 1:
             # Benchmark stats
             flight_time = time.time() - self.start_time
             print("Duration: ", flight_time)
@@ -82,29 +97,29 @@ class LandingPadStack(FlightPlanner):
         closest = self.pathtime
         closest_dist = 1e6
         cur_pos = np.array([self._position.x, self._position.y, self._position.z])
-        for t in np.arange(max(self.pathtime - 5, 0), min(self.pathtime + 5, self.traj.duration), 0.1):
+        for t in np.arange(max(self.pathtime - 5, 0), min(self.pathtime + 5, self.duration), 0.1):
             pos = self.traj.path(t)
             dist = np.linalg.norm(cur_pos - pos)
             if dist < closest_dist:
                 closest_dist = dist
                 closest = t
         self.cumulative_error += closest_dist * self.period
-        return closest + 2
+        return closest + 1
     
     def velocity_scale(self) -> float:
         slowdown = 1
-        last_v = self.traj.velocity(max(self.pathtime - 5, 0))
-        for dt in np.arange(-5, 5, 0.1):
-            v = self.traj.velocity(self.pathtime + dt)
-            slowdown += abs(0.1 * np.linalg.norm(v - last_v) / max(dt, 0.1))
+        last_v = self.traj.velocity(self.pathtime - 9)
+        for dt in np.arange(-10, 10, 0.1):
+            v = self.traj.velocity(self.pathtime + 1 + dt)
+            slowdown += 0.4 * np.linalg.norm(v - last_v) * (2 - abs(dt)/5.05)
             last_v = v
-        return 5 / slowdown
+        return max(1, 5 / slowdown)
 
 
 def main(args=None):
     rclpy.init(args=args)
 
-    minimal_publisher = LandingPadStack()
+    minimal_publisher = TrajBenchmarkStack()
 
     rclpy.spin(minimal_publisher)
 

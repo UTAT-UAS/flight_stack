@@ -12,9 +12,9 @@ from flight_stack_msgs.srv import CoreCommand
 from geometry_msgs.msg import Point
 from px4_msgs.msg import GotoSetpoint, VehicleStatus
 
-from pather import trajectory
+from flight_stack.pather import trajectory
 
-class LandingPadStack(FlightPlanner):
+class GotoBenchmarkStack(FlightPlanner):
     def __init__(self):
         super().__init__()
         self.point = Point()
@@ -92,7 +92,7 @@ class LandingPadStack(FlightPlanner):
 def main(args=None):
     rclpy.init(args=args)
 
-    minimal_publisher = LandingPadStack()
+    minimal_publisher = GotoBenchmarkStack()
 
     rclpy.spin(minimal_publisher)
 
