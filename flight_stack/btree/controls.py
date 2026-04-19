@@ -5,10 +5,10 @@ class ControlNode(BTNode):
         super().__init__(name)
         self.children = children
 
-    def setup(self):
-        #super().setup()
+    def setup(self, blackboard:dict):
+        super().setup(blackboard)
         for child in self.children:
-            child.setup()
+            child.setup(blackboard)
 
     def initialize(self):
         super().initialize()

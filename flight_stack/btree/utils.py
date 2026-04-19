@@ -11,9 +11,10 @@ class BTNode:
     def __init__(self, name:str):
         self.name = name
         self.status = STATUS.IDLE
+        self.blackboard = {}
     
-    def setup(self):
-        pass
+    def setup(self, blackboard:dict):
+        self.blackboard = blackboard
 
     def initialize(self):
         self.status = STATUS.RUNNING

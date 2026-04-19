@@ -8,6 +8,7 @@
 #include "px4_msgs/msg/vehicle_status.hpp"
 #include "px4_msgs/msg/vehicle_land_detected.hpp"
 #include "px4_msgs/srv/vehicle_command.hpp"
+#include "px4_msgs/msg/vehicle_attitude_setpoint.hpp"
 
 #include "flight_stack_msgs/srv/core_command.hpp"
 #include "flight_stack_msgs/msg/core_status.hpp"
@@ -60,6 +61,8 @@ private:
     void publish_goto_setpoint_raw(px4_msgs::msg::GotoSetpoint msg);
     rclcpp::Publisher<px4_msgs::msg::TrajectorySetpoint>::SharedPtr trajectory_setpoint_publisher_;
     void publish_trajectory_setpoint_raw(px4_msgs::msg::TrajectorySetpoint msg);
+    rclcpp::Publisher<px4_msgs::msg::VehicleAttitudeSetpoint>::SharedPtr vehicle_attitude_setpoint_publisher_;
+    void publish_vehicle_attitude_setpoint_raw(px4_msgs::msg::VehicleAttitudeSetpoint msg);
 
     rclcpp::Client<px4_msgs::srv::VehicleCommand>::SharedPtr vehicle_command_client_;
     void vehicle_command_request(uint16_t command, float param1, float param2);
@@ -78,6 +81,9 @@ private:
     rclcpp::Subscription<px4_msgs::msg::TrajectorySetpoint>::SharedPtr trajectory_setpoint_subscriber_;
     void trajectory_setpoint_callback(px4_msgs::msg::TrajectorySetpoint::UniquePtr msg);
     px4_msgs::msg::TrajectorySetpoint::UniquePtr trajectory_setpoint_{};
+    rclcpp::Subscription<px4_msgs::msg::VehicleAttitudeSetpoint>::SharedPtr vehicle_attitude_setpoint_subscriber_;
+    void vehicle_attitude_setpoint_callback(px4_msgs::msg::VehicleAttitudeSetpoint::UniquePtr msg);
+    px4_msgs::msg::VehicleAttitudeSetpoint::UniquePtr vehicle_attitude_setpoint_{};
 
     rclcpp::Publisher<flight_stack_msgs::msg::CoreStatus>::SharedPtr core_status_publisher_;
     void publish_status();
