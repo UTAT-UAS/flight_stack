@@ -15,6 +15,9 @@ from geometry_msgs.msg import Point
 from px4_msgs.msg import GotoSetpoint, VehicleStatus
 
 class BTreeFlightPlanner(FlightPlanner):
+    """
+    Example code, yaws to heading=2rad
+    """
     def __init__(self):
         super().__init__()
 
@@ -29,23 +32,23 @@ class BTreeFlightPlanner(FlightPlanner):
                 children=[
                     decorators.Timeout(
                         name="offboard_timeout",
-                        timeout=3,
+                        timeout=5,
                         child=actions.SetOffboard(
                             name="set_offboard",
                             fp=self
                         )
                     ),
-                    actions.SetGotoMode(
-                        name="set_goto",
+                    actions.SetTrajMode(
+                        name="set_traj",
                         fp=self
                     ),
-                    actions.AutoCenter(
+                    actions.AutoCenterTraj(
                         name="auto_center",
                         fp=self,
                         child=None,
-                        k=-0.002,
+                        k=-0.005,
                         floor_tol=10,
-                        max_rate=0.1,
+                        max_rate=0.5,
                     )
                 ]
             )
@@ -53,14 +56,12 @@ class BTreeFlightPlanner(FlightPlanner):
         self.btree.setup()
         time.sleep(1)  # wait for setup to complete
         self.btree.initialize()
-        q = self._attitude.q
-        self.target_yaw = 1+math.atan2(2.0*(q[2]*q[3] + q[0]*q[1]), q[0]*q[0] - q[1]*q[1] - q[2]*q[2] + q[3]*q[3])
+        self.target_yaw = 2
         print(self.target_yaw)
 
     def main_loop(self):
-        q = self._attitude.q
-        yaw = math.atan2(2.0*(q[2]*q[3] + q[0]*q[1]), q[0]*q[0] - q[1]*q[1] - q[2]*q[2] + q[3]*q[3])
-        self.btree.blackboard["target_dx"] = (self.target_yaw - yaw) * 100
+        # Example, to be replaced
+        self.btree.blackboard["target_dx"] = -(self.target_yaw - self._position.heading) * 100
 
         self.btree.tick()
         if self.btree.status == manager.STATUS.SUCCESS:
