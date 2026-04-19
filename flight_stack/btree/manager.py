@@ -9,15 +9,16 @@ class BehaviorTree:
     def __init__(self, name, root:BTNode=None):
         self.name = name
         self.root = root
+        self.blackboard = {}
         self.status = STATUS.IDLE
-    
+
     def setroot(self, root:BTNode):
         self.root = root
-    
+
     def setup(self):
         if self.root is None:
             raise Exception("Root node not set")
-        self.root.setup()  # should be recursive
+        self.root.setup(self.blackboard)  # should be recursive
 
     def initialize(self):
         if self.root is None:

@@ -17,6 +17,7 @@ FlightCore::FlightCore(bool is_simulation = false) : Node("flight_core"), is_sim
     offboard_control_mode_publisher_ = this->create_publisher<px4_msgs::msg::OffboardControlMode>("/fmu/in/offboard_control_mode", 10);
     goto_setpoint_publisher_ = this->create_publisher<px4_msgs::msg::GotoSetpoint>("/fmu/in/goto_setpoint", 10);
     trajectory_setpoint_publisher_ = this->create_publisher<px4_msgs::msg::TrajectorySetpoint>("/fmu/in/trajectory_setpoint", 10);
+    vehicle_attitude_setpoint_publisher_ = this->create_publisher<px4_msgs::msg::VehicleAttitudeSetpoint>("/fmu/in/vehicle_attitude_setpoint", 10);
 
     // TODO: prune stale service requests
     vehicle_command_client_ = this->create_client<px4_msgs::srv::VehicleCommand>("/fmu/vehicle_command", rmw_qos_profile_services_default);
@@ -24,6 +25,7 @@ FlightCore::FlightCore(bool is_simulation = false) : Node("flight_core"), is_sim
     // FlightCore
     goto_setpoint_subscriber_ = this->create_subscription<px4_msgs::msg::GotoSetpoint>("/uas/core/goto_setpoint", qos, std::bind(&FlightCore::goto_setpoint_callback, this, std::placeholders::_1));
     trajectory_setpoint_subscriber_ = this->create_subscription<px4_msgs::msg::TrajectorySetpoint>("/uas/core/trajectory_setpoint", qos, std::bind(&FlightCore::trajectory_setpoint_callback, this, std::placeholders::_1));
+    vehicle_attitude_setpoint_subscriber_ = this->create_subscription<px4_msgs::msg::VehicleAttitudeSetpoint>("/uas/core/vehicle_attitude_setpoint", qos, std::bind(&FlightCore::vehicle_attitude_setpoint_callback, this, std::placeholders::_1));
 
     core_status_publisher_ = this->create_publisher<flight_stack_msgs::msg::CoreStatus>("/uas/core/status", 10);
 
@@ -84,7 +86,7 @@ void FlightCore::publish_offboard_control_mode()
     msg.position = true;
     msg.velocity = true;
     msg.acceleration = false;
-    msg.attitude = false;
+    msg.attitude = true;
     msg.body_rate = false;
     msg.timestamp = this->get_clock()->now().nanoseconds() / 1000;
     offboard_control_mode_publisher_->publish(msg);
@@ -123,6 +125,12 @@ void FlightCore::publish_trajectory_setpoint_raw(px4_msgs::msg::TrajectorySetpoi
 {
     msg.timestamp = this->get_clock()->now().nanoseconds() / 1000;
     trajectory_setpoint_publisher_->publish(msg);
+}
+
+void FlightCore::publish_vehicle_attitude_setpoint_raw(px4_msgs::msg::VehicleAttitudeSetpoint msg)
+{
+    msg.timestamp = this->get_clock()->now().nanoseconds() / 1000;
+    vehicle_attitude_setpoint_publisher_->publish(msg);
 }
 
 void FlightCore::vehicle_command_request(uint16_t command, float param1 = 0.0, float param2 = 0.0)
@@ -372,6 +380,10 @@ void FlightCore::goto_setpoint_callback(px4_msgs::msg::GotoSetpoint::UniquePtr m
 void FlightCore::trajectory_setpoint_callback(px4_msgs::msg::TrajectorySetpoint::UniquePtr msg)
 {
     trajectory_setpoint_ = std::move(msg);
+}
+void FlightCore::vehicle_attitude_setpoint_callback(px4_msgs::msg::VehicleAttitudeSetpoint::UniquePtr msg)
+{
+    vehicle_attitude_setpoint_ = std::move(msg);
 }
 
 void FlightCore::publish_status()

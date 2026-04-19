@@ -5,7 +5,7 @@ from flight_stack.flight_stack import FlightPlanner
 from flight_stack.pather import trajectory
 
 from flight_stack_msgs.srv import CoreCommand
-from px4_msgs.msg import GotoSetpoint, VehicleStatus, TrajectorySetpoint
+from px4_msgs.msg import GotoSetpoint, VehicleStatus, TrajectorySetpoint, VehicleAttitudeSetpoint
 
 from .utils import BTNode, STATUS
 
@@ -181,3 +181,23 @@ class Traj(BTNode):
         self.goto.velocity = list(self.traj.velocity(self.pathtime) * vscale)
         self.fp._traj_publisher.publish(self.goto)
         return self.status
+
+
+class AutoCenter(BTNode):
+    def __init__(self, name, fp:FlightPlanner, k=-0.002, floor_tol=10, max_rate=0.1):
+        super().__init__(name)
+        self.fp = fp
+        self.setpoint = VehicleAttitudeSetpoint()
+        self.k = -abs(k)
+        self.floor_tol = floor_tol
+        self.max_rate = max_rate
+
+    def tick(self):
+        # only works for GOTO mode
+        dx = self.blackboard["target_dx"]
+        if dx < self.floor_tol:
+            self.setpoint.yaw_sp_move_rate = 0
+        else:
+            self.setpoint.yaw_sp_move_rate = min(max(self.k * dx, -self.max_rate), self.max_rate)
+        self.fp._attitude_publisher.publish(self.setpoint)
+        return STATUS.SUCCESS
