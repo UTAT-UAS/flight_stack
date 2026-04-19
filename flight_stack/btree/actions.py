@@ -184,13 +184,32 @@ class Traj(BTNode):
 
 
 class AutoCenter(BTNode):
-    def __init__(self, name, fp:FlightPlanner, k=-0.002, floor_tol=10, max_rate=0.1):
+    """
+    Action + Decorator
+    """
+    def __init__(self, name, fp:FlightPlanner, child:BTNode, k=-0.002, floor_tol=10, max_rate=0.1):
         super().__init__(name)
         self.fp = fp
         self.setpoint = VehicleAttitudeSetpoint()
         self.k = -abs(k)
         self.floor_tol = floor_tol
         self.max_rate = max_rate
+        self.child = child
+
+    def setup(self, blackboard:dict):
+        super().setup(blackboard)
+        if self.child:
+            self.child.setup(blackboard)
+
+    def initialize(self):
+        super().initialize()
+        if self.child:
+            self.child.initialize()
+
+    def reset(self):
+        if self.child:
+            self.child.reset()
+        super().reset()
 
     def tick(self):
         # only works for GOTO mode
@@ -200,4 +219,10 @@ class AutoCenter(BTNode):
         else:
             self.setpoint.yaw_sp_move_rate = min(max(self.k * dx, -self.max_rate), self.max_rate)
         self.fp._attitude_publisher.publish(self.setpoint)
-        return STATUS.SUCCESS
+        
+        if self.child:
+            self.status = self.child.tick()
+        elif abs(dx) < self.floor_tol:
+            self.status = STATUS.SUCCESS
+        
+        return self.status
