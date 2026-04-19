@@ -1,3 +1,4 @@
+import math
 import time
 import numpy as np
 
@@ -44,7 +45,7 @@ class SetTrajMode(BTNode):
         self.fp = fp
 
     def tick(self):
-        print("CoreMode -> GOTO request sent")
+        print("CoreMode -> TRAJ request sent")
         command = CoreCommand.Request()
         command.request.command = 7 # CORE_TRAJ request command
         self.fp._core_command_client.call_async(command)
@@ -214,15 +215,85 @@ class AutoCenter(BTNode):
     def tick(self):
         # only works for GOTO mode
         dx = self.blackboard["target_dx"]
-        if dx < self.floor_tol:
-            self.setpoint.yaw_sp_move_rate = 0
+        if abs(dx) < self.floor_tol:
+            self.setpoint.yaw_sp_move_rate = 0.0
         else:
             self.setpoint.yaw_sp_move_rate = min(max(self.k * dx, -self.max_rate), self.max_rate)
+
+        # Publish a valid attitude setpoint for PX4.
+        # Predict the yaw 0.1s into the future using the commanded yaw rate.
+        q = [float(x) for x in self.fp._attitude.q]
+        q0, q1, q2, q3 = q
+        roll = math.atan2(2.0 * (q0 * q1 + q2 * q3), q0 * q0 - q1 * q1 - q2 * q2 + q3 * q3)
+        pitch = math.asin(2.0 * (q0 * q2 - q1 * q3))
+        yaw = math.atan2(2.0 * (q0 * q3 + q1 * q2), q0 * q0 + q1 * q1 - q2 * q2 - q3 * q3)
+        future_yaw = yaw + self.setpoint.yaw_sp_move_rate * 0.1
+        cy = math.cos(future_yaw * 0.5)
+        sy = math.sin(future_yaw * 0.5)
+        cp = math.cos(pitch * 0.5)
+        sp = math.sin(pitch * 0.5)
+        cr = math.cos(roll * 0.5)
+        sr = math.sin(roll * 0.5)
+        self.setpoint.q_d = [
+            cr * cp * cy + sr * sp * sy,
+            sr * cp * cy - cr * sp * sy,
+            cr * sp * cy + sr * cp * sy,
+            cr * cp * sy - sr * sp * cy,
+        ]
+        #self.setpoint.thrust_body = [None, None, None]
         self.fp._attitude_publisher.publish(self.setpoint)
-        
+
         if self.child:
             self.status = self.child.tick()
         elif abs(dx) < self.floor_tol:
             self.status = STATUS.SUCCESS
-        
+
+        return self.status
+
+
+class AutoCenterTraj(BTNode):
+    def __init__(self, name, fp:FlightPlanner, child:BTNode=None, k=-0.002, floor_tol=10, max_rate=0.1):
+        super().__init__(name)
+        self.fp = fp
+        self.goto = TrajectorySetpoint()
+        self.hover_height = -5
+        self.k = -abs(k)
+        self.floor_tol = floor_tol
+        self.max_rate = max_rate
+        self.child = child
+
+    def setup(self, blackboard:dict):
+        super().setup(blackboard)
+        if self.child:
+            self.child.setup(blackboard)
+
+    def initialize(self):
+        super().initialize()
+        # Hover
+        self.goto.position = [self.fp._position.x, self.fp._position.y, self.hover_height]
+        self.goto.velocity = [0.0, 0.0, 0.0]
+        if self.child:
+            self.child.initialize()
+
+    def reset(self):
+        if self.child:
+            self.child.reset()
+        super().reset()
+
+    def tick(self):
+        dx = self.blackboard["target_dx"]
+        if abs(dx) < self.floor_tol:
+            self.goto.yawspeed = 0.0
+        else:
+            self.goto.yawspeed = min(max(self.k * dx, -self.max_rate), self.max_rate)
+        self.goto.yaw = self.fp._position.heading + self.goto.yawspeed * 0.1
+        print(self.goto.yaw, self.goto.yawspeed)
+
+        self.fp._traj_publisher.publish(self.goto)
+
+        if self.child:
+            self.status = self.child.tick()
+        elif abs(dx) < self.floor_tol:
+            self.status = STATUS.SUCCESS
+
         return self.status
