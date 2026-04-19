@@ -432,6 +432,13 @@ void FlightCore::control_timer_callback()
     case CoreMode::OUT_OF_BOUNDS:
         break;
     }
+
+    // Yaw publishing logic should be improved
+    if (vehicle_attitude_setpoint_)
+    {
+        px4_msgs::msg::VehicleAttitudeSetpoint temp = *vehicle_attitude_setpoint_;
+        publish_vehicle_attitude_setpoint_raw(temp);
+    }
 }
 
 /*

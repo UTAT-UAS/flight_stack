@@ -7,14 +7,14 @@ class DecoratorNode(BTNode):
         super().__init__(name)
         self.child = child
 
-    def setup(self):
-        #super().setup()
-        self.child.setup()
+    def setup(self, blackboard:dict):
+        super().setup(blackboard)
+        self.child.setup(blackboard)
 
     def initialize(self):
         super().initialize()
         self.child.initialize()
-    
+
     def reset(self):
         self.child.reset()
         super().reset()
@@ -66,7 +66,7 @@ class Timeout(DecoratorNode):
     def initialize(self):
         super().initialize()
         self.start_time = time.time()
-    
+
     def reset(self):
         super().reset()
         self.start_time = None
@@ -76,7 +76,7 @@ class Timeout(DecoratorNode):
             self.status = STATUS.FAILURE
             self.child.status = STATUS.FAILURE  # don't leave in running state
             return self.status
-        
+
         child_status = self.child.tick()
         self.status = child_status
         return self.status
