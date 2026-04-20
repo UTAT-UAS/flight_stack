@@ -19,8 +19,6 @@ FlightCore::FlightCore(bool is_simulation = false) : Node("flight_core"), is_sim
     trajectory_setpoint_publisher_ = this->create_publisher<px4_msgs::msg::TrajectorySetpoint>("/fmu/in/trajectory_setpoint", 10);
     vehicle_attitude_setpoint_publisher_ = this->create_publisher<px4_msgs::msg::VehicleAttitudeSetpoint>("/fmu/in/vehicle_attitude_setpoint", 10);
 
-    RCLCPP_INFO_STREAM(this->get_logger(), "publishers started");
-
     // TODO: prune stale service requests
     vehicle_command_client_ = this->create_client<px4_msgs::srv::VehicleCommand>("/fmu/vehicle_command", rmw_qos_profile_services_default);
 
@@ -407,7 +405,6 @@ void FlightCore::control_timer_callback()
         // https://github.com/PX4/PX4-Autopilot/pull/22530
         return;
     }
-    RCLCPP_INFO(this->get_logger(), "Current CoreMode: " + std::to_string((uint8_t)core_mode_));
     switch (core_mode_)
     {
     case CoreMode::GOTO:

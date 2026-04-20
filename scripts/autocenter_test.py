@@ -13,17 +13,22 @@ from flight_stack.btree import manager, controls, decorators, actions
 from flight_stack_msgs.srv import CoreCommand
 from geometry_msgs.msg import Point
 from px4_msgs.msg import GotoSetpoint, VehicleStatus
+from std_msgs.msg import Float32
+from rclpy.qos import QoSPresetProfiles
 
 class BTreeFlightPlanner(FlightPlanner):
     """
-    Example code, yaws to heading=2rad
+    Example code, autocenters yaw for 20s
     """
     def __init__(self):
         super().__init__()
 
-        self.reset = False
-        self.requested = False
-        self.set_height = -5
+        self.xerror_subscriber = self.create_subscription(
+            Float32,
+            "/uas/cv/x_error",
+            self.xerror_cb,
+            QoSPresetProfiles.SENSOR_DATA.value,
+        )
 
         self.btree = manager.BehaviorTree("square_tree")
         self.btree.setroot(
@@ -45,8 +50,11 @@ class BTreeFlightPlanner(FlightPlanner):
                     actions.AutoCenterTraj(
                         name="auto_center",
                         fp=self,
-                        child=None,
-                        k=-0.005,
+                        child=actions.Timer(
+                            name="center_timer",
+                            duration=20
+                        ),
+                        k=0.005,
                         floor_tol=10,
                         max_rate=0.5,
                     )
@@ -59,10 +67,10 @@ class BTreeFlightPlanner(FlightPlanner):
         self.target_yaw = 2
         print(self.target_yaw)
 
-    def main_loop(self):
-        # Example, to be replaced
-        self.btree.blackboard["target_dx"] = -(self.target_yaw - self._position.heading) * 100
+    def xerror_cb(self, msg):
+        self.btree.blackboard["target_dx"] = msg.data
 
+    def main_loop(self):
         self.btree.tick()
         if self.btree.status == manager.STATUS.SUCCESS:
             print("mission complete")
