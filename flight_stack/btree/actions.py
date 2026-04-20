@@ -89,6 +89,29 @@ class Hover(BTNode):
         return self.status
 
 
+class Timer(BTNode):
+    """
+    Success after a certain time
+    """
+    def __init__(self, name, duration=5):
+        super().__init__(name)
+        self.duration = duration
+        self.start_time = None
+
+    def initialize(self):
+        super().initialize()
+        self.start_time = time.time()
+
+    def reset(self):
+        super().reset()
+        self.start_time = None
+
+    def tick(self):
+        if time.time() - self.start_time > self.duration:
+            self.status = STATUS.SUCCESS
+        return self.status
+
+
 class Goto(BTNode):
     def __init__(self, name, fp:FlightPlanner, points:list[list[float]]):
         super().__init__(name)
@@ -188,11 +211,11 @@ class AutoCenter(BTNode):
     """
     Action + Decorator
     """
-    def __init__(self, name, fp:FlightPlanner, child:BTNode, k=-0.002, floor_tol=10, max_rate=0.1):
+    def __init__(self, name, fp:FlightPlanner, child:BTNode, k=0.002, floor_tol=10, max_rate=0.1):
         super().__init__(name)
         self.fp = fp
         self.setpoint = VehicleAttitudeSetpoint()
-        self.k = -abs(k)
+        self.k = k
         self.floor_tol = floor_tol
         self.max_rate = max_rate
         self.child = child
@@ -252,12 +275,12 @@ class AutoCenter(BTNode):
 
 
 class AutoCenterTraj(BTNode):
-    def __init__(self, name, fp:FlightPlanner, child:BTNode=None, k=-0.002, floor_tol=10, max_rate=0.1):
+    def __init__(self, name, fp:FlightPlanner, child:BTNode=None, k=0.002, floor_tol=10, max_rate=0.1):
         super().__init__(name)
         self.fp = fp
         self.goto = TrajectorySetpoint()
-        self.hover_height = -5
-        self.k = -abs(k)
+        self.hover_height = -5.0
+        self.k = k
         self.floor_tol = floor_tol
         self.max_rate = max_rate
         self.child = child
