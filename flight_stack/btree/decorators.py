@@ -23,6 +23,17 @@ class DecoratorNode(BTNode):
         pass
 
 
+class RemapStatus(DecoratorNode):
+    def __init__(self, name, child:BTNode=None, remap={STATUS.FAILURE: STATUS.SUCCESS}):
+        super().__init__(name, child)
+        self.remap = remap
+
+    def tick(self):
+        child_status = self.child.tick()
+        self.status = self.remap.get(child_status, child_status)
+        return self.status
+
+
 class Retry(DecoratorNode):
     """
     While child fails, will retry a specified number of times before returning failure.

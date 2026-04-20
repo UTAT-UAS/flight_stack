@@ -54,9 +54,9 @@ class BTreeFlightPlanner(FlightPlanner):
                             name="center_timer",
                             duration=20
                         ),
-                        k=0.005,
+                        k=0.0005,
                         floor_tol=10,
-                        max_rate=0.5,
+                        max_rate=0.2,
                     )
                 ]
             )

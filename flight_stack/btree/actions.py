@@ -279,7 +279,6 @@ class AutoCenterTraj(BTNode):
         super().__init__(name)
         self.fp = fp
         self.goto = TrajectorySetpoint()
-        self.hover_height = -5.0
         self.k = k
         self.floor_tol = floor_tol
         self.max_rate = max_rate
@@ -293,7 +292,7 @@ class AutoCenterTraj(BTNode):
     def initialize(self):
         super().initialize()
         # Hover
-        self.goto.position = [self.fp._position.x, self.fp._position.y, self.hover_height]
+        self.goto.position = [self.fp._position.x, self.fp._position.y, self.fp._position.z]
         self.goto.velocity = [0.0, 0.0, 0.0]
         if self.child:
             self.child.initialize()
