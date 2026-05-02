@@ -24,7 +24,6 @@ class TrajBenchmarkStack(FlightPlanner):
         self.time = time.time()
         self.start_time = -1
         self.cumulative_error = 0.0
-        self.period = 0.2
         self.traj = trajectory.AmongusHigherRes(np.array([self._position.x, self._position.y, self._position.z]))
         self.pathtime = 0
         self.duration = 0
@@ -81,17 +80,17 @@ class TrajBenchmarkStack(FlightPlanner):
             command.request.command = 5
             self._core_command_client.call_async(command)
             exit()
-        if time.time() - self.time > self.period:
-            if(self.start_time == -1):
-                self.start_time = time.time()
-            
-            self.pathtime = self.projection()
-            self.goto.position = list(self.traj.path(self.pathtime))
-            vscale = self.velocity_scale()
-            print(vscale)
-            self.goto.velocity = list(self.traj.velocity(self.pathtime) * vscale)
-            self._traj_publisher.publish(self.goto)
-            self.time = time.time()
+
+        if(self.start_time == -1):
+            self.start_time = time.time()
+        
+        self.pathtime = self.projection()
+        self.goto.position = list(self.traj.path(self.pathtime))
+        vscale = self.velocity_scale()
+        print(vscale)
+        self.goto.velocity = list(self.traj.velocity(self.pathtime) * vscale)
+        self._traj_publisher.publish(self.goto)
+        self.time = time.time()
 
     def projection(self) -> bool:
         closest = self.pathtime
