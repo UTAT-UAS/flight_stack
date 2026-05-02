@@ -2,10 +2,12 @@
 
 import math
 import time
+import sys
 import numpy as np
 from std_msgs.msg import Float32
 import rclpy
 from flight_stack.flight_stack import FlightPlanner
+from flight_stack.pather import trajectory
 from flight_stack_msgs.srv import CoreCommand
 from geometry_msgs.msg import Point
 from px4_msgs.msg import VehicleStatus, VehicleLocalPosition, BatteryStatus, TrajectorySetpoint
@@ -17,10 +19,15 @@ class CurrentController(FlightPlanner):
         super().__init__()
         self.point = Point()
 
+        # trajectory
+        self.traj = trajectory.Custom(None, 0, np.array([]), 0)
+        self.duration = 0
         # state vars
+        self.unitialized_traj = True
         self.current_draw = 0.0
         self.capacity_consumed = 0.0
         self.drone_vel_mag = 0.0
+        self.pathtime = 0
         # inner loop vars
         self.target_velocity = 0.0  # Output of inner loop
         self.integral_limit = 5.0  # m/s, max contribution of integral term to velocity setpoint
@@ -103,9 +110,11 @@ class CurrentController(FlightPlanner):
         # calculate velocity magnitude from xy vectors
         self.drone_vel_mag = math.sqrt(msg.vx**2 + msg.vy**2)
 
-    def _pub_vel_setpoint_test(self):
+    def _pub_traj_setpoint(self):
         self.goto.position = [math.nan, math.nan, math.nan]  # ignore position setpoint
+        #self.goto.position = list(self.traj.path(self.pathtime))
         self.goto.velocity = [self.target_velocity, 0.0, 0.0]
+        #self.goto.velocity = list(self.traj.velocity(self.pathtime) * self.target_velocity)
         self._traj_publisher.publish(self.goto)
 
     def get_feedforward_velocity(self, target_current: float) -> float:
@@ -124,8 +133,41 @@ class CurrentController(FlightPlanner):
         return 0.0
 
     def inner_current_loop(self):
-        """Update target velocity based on current tracking error."""
+        """Update target velocity based on current tracking error and curvature."""
+        if self.unitialized_traj:
+            self.unitialized_traj = False
+            x, y, z = self._position.x, self._position.y, self._position.z
+            paths = [
+                trajectory.Line(np.array([x, y, z]), np.array([x + 300, y, z]), duration=300),
+                #trajectory.Circle(np.array([x, y + 10, z]), np.array([x + 5, y + 10, z]), cycles=0.5, axis=np.array([0, 0, -1])),
+                #trajectory.Circle(np.array([x + 10, y + 10, z]), np.array([x + 12, y + 10, z]), cycles=1),
+                #trajectory.Line(np.array([x + 10, y + 10, z]), np.array([x + 10, y - 10, z]), duration=20),
+                #trajectory.Line(np.array([x + 10, y - 10, z]), np.array([x + 15, y - 15, z]), duration=50**0.5),
+                #trajectory.Line(np.array([x + 15, y - 15, z]), np.array([x + 30, y, z]), duration=450**0.5),
+                #trajectory.Line(np.array([x + 30, y, z]), np.array([x, y, z]), duration=30),
+            ]
+            for i, traj in enumerate(paths[:-1]):
+                traj.next = paths[i + 1]
+                self.duration += traj.duration
+            self.duration += paths[-1].duration
+            self.traj = paths[0]
+            self.goto.position = [self._position.x, self._position.y, self._position.z]
+            self.goto.velocity = [0.0, 0.0, 0.0]
+            self._pub_traj_setpoint()
+
+            command = CoreCommand.Request()
+            command.request.command = 2
+            self._core_command_client.call_async(command)
+            command = CoreCommand.Request()
+            command.request.command = 7 # CORE_TRAJ request command
+            self._core_command_client.call_async(command)
+
+            return
+        if self.pathtime > self.duration - 1:
+            sys.exit()
+
         error = self.current_setpoint - self.current_draw
+        # error = self.current_setpoint - self.current_draw + estimate_correction(self.target_velocity, self.intermediate_target_velocity) # back calculation for anti-windup
         p_term = self.kp_inner * error
 
         # anti-windup by scaling integral based on how close we are to target vel
@@ -139,7 +181,12 @@ class CurrentController(FlightPlanner):
         self.stored_integral = max(-self.integral_limit, min(self.stored_integral, self.integral_limit))
 
         # raw target vel
-        self.target_velocity = self.base_ff_velocity + p_term + self.stored_integral
+        self.intermediate_target_velocity = self.base_ff_velocity + p_term + self.stored_integral
+
+        # projection and curvature
+        self.pathtime = self.projection()
+        curvature_scale = self.velocity_scale()
+        self.target_velocity = self.intermediate_target_velocity * curvature_scale
 
         # slew rate limiter to velocity output
         max_delta = self.max_acceleration * self.inner_dt
@@ -151,7 +198,7 @@ class CurrentController(FlightPlanner):
         # publish slewed velocity setpoint
         self.target_velocity = self.last_target_velocity + clamped_delta
         self.last_target_velocity = self.target_velocity
-        self._pub_vel_setpoint_test()
+        self._pub_traj_setpoint()
 
 
 
@@ -183,6 +230,26 @@ class CurrentController(FlightPlanner):
             f"Current Draw: {self.current_draw:.2f} A, Commanded Current: {self.current_setpoint:.2f} A, Target Vel: {self.base_ff_velocity:.2f} m/s\nTarget Ah: {target_ah:.3f} Ah, Consumed Ah: {net_capacity:.3f} Ah, Ah Error: {ah_error:.3f} Ah"
         )
 
+    def projection(self) -> bool:
+        closest = self.pathtime
+        closest_dist = 1e6
+        cur_pos = np.array([self._position.x, self._position.y, self._position.z])
+        for t in np.arange(max(self.pathtime - 5, 0), min(self.pathtime + 5, self.duration), 0.1):
+            pos = self.traj.path(t)
+            dist = np.linalg.norm(cur_pos - pos)
+            if dist < closest_dist:
+                closest_dist = dist
+                closest = t
+        return closest + 1
+    
+    def velocity_scale(self) -> float:
+        slowdown = 1
+        last_v = self.traj.velocity(self.pathtime - 9)
+        for dt in np.arange(-10, 10, 0.1):
+            v = self.traj.velocity(self.pathtime + 1 + dt)
+            slowdown += 0.4 * np.linalg.norm(v - last_v) * (2 - abs(dt)/5.05)
+            last_v = v
+        return max(1, 5 / slowdown)
 
 
 def main(args=None):
