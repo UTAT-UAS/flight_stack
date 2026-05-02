@@ -8,7 +8,7 @@ import rclpy
 
 from flight_stack.flight_stack import FlightPlanner
 from flight_stack.pather import trajectory
-from flight_stack.btree import manager, controls, decorators, actions
+from flight_stack.btree import manager, controls, decorators, actions, utils
 
 from flight_stack_msgs.srv import CoreCommand
 from geometry_msgs.msg import Point
@@ -50,10 +50,7 @@ class BTreeFlightPlanner(FlightPlanner):
                     actions.AutoCenterTraj(
                         name="auto_center",
                         fp=self,
-                        child=actions.Timer(
-                            name="center_timer",
-                            duration=20
-                        ),
+                        child=utils.BTNode("indefinite"),
                         k=0.0005,
                         floor_tol=10,
                         max_rate=0.2,

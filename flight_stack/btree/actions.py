@@ -285,8 +285,6 @@ class AutoCenterTraj(BTNode):
         self.max_rate = max_rate
         self.child = child
 
-        self.latency = []
-
     def setup(self, blackboard:dict):
         super().setup(blackboard)
         if self.child:
@@ -297,7 +295,6 @@ class AutoCenterTraj(BTNode):
         # Hover
         self.goto.position = [self.fp._position.x, self.fp._position.y, self.fp._position.z]
         self.goto.velocity = [0.0, 0.0, 0.0]
-        self.latency = collections.deque([self.fp._position.heading for _ in range(20)])
         if self.child:
             self.child.initialize()
 
@@ -308,11 +305,6 @@ class AutoCenterTraj(BTNode):
 
     def tick(self):
         dx = self.blackboard.get("target_dx")
-
-        target = 0
-        dx = 1400 * (target - self.latency.pop()) + np.random.normal(-40, 40)
-        self.latency.append(self.fp._position.heading)
-
         if dx is None:
             print("warning: target_dx not found in blackboard")
             return self.status

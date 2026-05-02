@@ -12,15 +12,15 @@ class BTNode:
         self.name = name
         self.status = STATUS.IDLE
         self.blackboard = {}
-    
+
     def setup(self, blackboard:dict):
         self.blackboard = blackboard
 
     def initialize(self):
         self.status = STATUS.RUNNING
-    
+
     def reset(self):
         self.status = STATUS.IDLE
 
     def tick(self):
-        pass
+        return self.status
