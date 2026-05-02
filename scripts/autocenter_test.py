@@ -64,8 +64,6 @@ class BTreeFlightPlanner(FlightPlanner):
         self.btree.setup()
         time.sleep(1)  # wait for setup to complete
         self.btree.initialize()
-        self.target_yaw = 2
-        print(self.target_yaw)
 
     def xerror_cb(self, msg):
         self.btree.blackboard["target_dx"] = msg.data

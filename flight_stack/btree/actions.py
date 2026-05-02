@@ -1,3 +1,4 @@
+import collections
 import math
 import time
 import numpy as np
@@ -284,6 +285,8 @@ class AutoCenterTraj(BTNode):
         self.max_rate = max_rate
         self.child = child
 
+        self.latency = []
+
     def setup(self, blackboard:dict):
         super().setup(blackboard)
         if self.child:
@@ -294,6 +297,7 @@ class AutoCenterTraj(BTNode):
         # Hover
         self.goto.position = [self.fp._position.x, self.fp._position.y, self.fp._position.z]
         self.goto.velocity = [0.0, 0.0, 0.0]
+        self.latency = collections.deque([self.fp._position.heading for _ in range(20)])
         if self.child:
             self.child.initialize()
 
@@ -303,12 +307,20 @@ class AutoCenterTraj(BTNode):
         super().reset()
 
     def tick(self):
-        dx = self.blackboard["target_dx"]
+        dx = self.blackboard.get("target_dx")
+
+        target = 0
+        dx = 1400 * (target - self.latency.pop()) + np.random.normal(-40, 40)
+        self.latency.append(self.fp._position.heading)
+
+        if dx is None:
+            print("warning: target_dx not found in blackboard")
+            return self.status
         if abs(dx) < self.floor_tol:
             self.goto.yawspeed = 0.0
         else:
             self.goto.yawspeed = min(max(self.k * dx, -self.max_rate), self.max_rate)
-        self.goto.yaw = self.fp._position.heading + self.goto.yawspeed * 0.1
+            self.goto.yaw = self.fp._position.heading + self.goto.yawspeed * 0.002
         print(self.goto.yaw, self.goto.yawspeed)
 
         self.fp._traj_publisher.publish(self.goto)
