@@ -102,7 +102,7 @@ class TrajBenchmarkStack(FlightPlanner):
             if dist < closest_dist:
                 closest_dist = dist
                 closest = t
-        self.cumulative_error += closest_dist * self.period
+        self.cumulative_error += closest_dist * 0.1 # just 1/10 scaling factor
         return closest + 1
     
     def velocity_scale(self) -> float:

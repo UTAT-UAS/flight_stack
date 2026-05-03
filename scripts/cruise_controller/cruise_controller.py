@@ -30,7 +30,7 @@ class CurrentController(FlightPlanner):
         self.pathtime = 0
         # inner loop vars
         self.target_velocity = 0.0  # Output of inner loop
-        self.integral_limit = 5.0  # m/s, max contribution of integral term to velocity setpoint
+        self.integral_limit = 15.0  # m/s, max contribution of integral term to velocity setpoint
         # outer loop vars
         self.target_current_draw = 40.0 # input of outer loop
         self.current_setpoint = self.target_current_draw   # Output of outer loop, defaults to 60A
@@ -111,10 +111,10 @@ class CurrentController(FlightPlanner):
         self.drone_vel_mag = math.sqrt(msg.vx**2 + msg.vy**2)
 
     def _pub_traj_setpoint(self):
-        self.goto.position = [math.nan, math.nan, math.nan]  # ignore position setpoint
-        #self.goto.position = list(self.traj.path(self.pathtime))
-        self.goto.velocity = [self.target_velocity, 0.0, 0.0]
-        #self.goto.velocity = list(self.traj.velocity(self.pathtime) * self.target_velocity)
+        #self.goto.position = [math.nan, math.nan, math.nan]  # ignore position setpoint
+        self.goto.position = list(self.traj.path(self.pathtime) * 10)
+        #self.goto.velocity = [self.target_velocity, 0.0, 0.0]
+        self.goto.velocity = list(self.traj.velocity(self.pathtime) * self.target_velocity)
         self._traj_publisher.publish(self.goto)
 
     def get_feedforward_velocity(self, target_current: float) -> float:
@@ -136,15 +136,15 @@ class CurrentController(FlightPlanner):
         """Update target velocity based on current tracking error and curvature."""
         if self.unitialized_traj:
             self.unitialized_traj = False
-            x, y, z = self._position.x, self._position.y, self._position.z
+            x, y, z = self._position.x / 10, self._position.y / 10, self._position.z / 10
             paths = [
-                trajectory.Line(np.array([x, y, z]), np.array([x + 300, y, z]), duration=300),
-                #trajectory.Circle(np.array([x, y + 10, z]), np.array([x + 5, y + 10, z]), cycles=0.5, axis=np.array([0, 0, -1])),
-                #trajectory.Circle(np.array([x + 10, y + 10, z]), np.array([x + 12, y + 10, z]), cycles=1),
-                #trajectory.Line(np.array([x + 10, y + 10, z]), np.array([x + 10, y - 10, z]), duration=20),
-                #trajectory.Line(np.array([x + 10, y - 10, z]), np.array([x + 15, y - 15, z]), duration=50**0.5),
-                #trajectory.Line(np.array([x + 15, y - 15, z]), np.array([x + 30, y, z]), duration=450**0.5),
-                #trajectory.Line(np.array([x + 30, y, z]), np.array([x, y, z]), duration=30),
+                trajectory.Line(np.array([x, y, z]), np.array([x, y + 10, z]), duration=10),
+                trajectory.Circle(np.array([x, y + 10, z]), np.array([x + 5, y + 10, z]), cycles=0.5, axis=np.array([0, 0, -1])),
+                trajectory.Circle(np.array([x + 10, y + 10, z]), np.array([x + 12, y + 10, z]), cycles=1),
+                trajectory.Line(np.array([x + 10, y + 10, z]), np.array([x + 10, y - 10, z]), duration=20),
+                trajectory.Line(np.array([x + 10, y - 10, z]), np.array([x + 15, y - 15, z]), duration=50**0.5),
+                trajectory.Line(np.array([x + 15, y - 15, z]), np.array([x + 30, y, z]), duration=450**0.5),
+                trajectory.Line(np.array([x + 30, y, z]), np.array([x, y, z]), duration=30),
             ]
             for i, traj in enumerate(paths[:-1]):
                 traj.next = paths[i + 1]
@@ -176,7 +176,7 @@ class CurrentController(FlightPlanner):
         vel_ratio = max(0.0, min(vel_ratio, 1.0)) # Clamp between 0 and 1
 
         self.stored_integral += (error * self.ki_inner * self.inner_dt) * vel_ratio
-        
+
         # clamp integral action
         self.stored_integral = max(-self.integral_limit, min(self.stored_integral, self.integral_limit))
 
@@ -227,13 +227,13 @@ class CurrentController(FlightPlanner):
 
         # print diagnostics
         self.get_logger().info(
-            f"Current Draw: {self.current_draw:.2f} A, Commanded Current: {self.current_setpoint:.2f} A, Target Vel: {self.base_ff_velocity:.2f} m/s\nTarget Ah: {target_ah:.3f} Ah, Consumed Ah: {net_capacity:.3f} Ah, Ah Error: {ah_error:.3f} Ah"
+            f"Current Draw: {self.current_draw:.2f} A, Commanded Current: {self.current_setpoint:.2f} A, Target Vel: {self.base_ff_velocity:.2f} m/s, Inner Target Vel: {self.target_velocity:.2f} m/s\nTarget Ah: {target_ah:.3f} Ah, Consumed Ah: {net_capacity:.3f} Ah, Ah Error: {ah_error:.3f} Ah"
         )
 
     def projection(self) -> bool:
         closest = self.pathtime
         closest_dist = 1e6
-        cur_pos = np.array([self._position.x, self._position.y, self._position.z])
+        cur_pos = np.array([self._position.x, self._position.y, self._position.z]) / 10
         for t in np.arange(max(self.pathtime - 5, 0), min(self.pathtime + 5, self.duration), 0.1):
             pos = self.traj.path(t)
             dist = np.linalg.norm(cur_pos - pos)
@@ -249,7 +249,7 @@ class CurrentController(FlightPlanner):
             v = self.traj.velocity(self.pathtime + 1 + dt)
             slowdown += 0.4 * np.linalg.norm(v - last_v) * (2 - abs(dt)/5.05)
             last_v = v
-        return max(1, 5 / slowdown)
+        return max(1 / slowdown, 0.2)
 
 
 def main(args=None):
