@@ -50,7 +50,7 @@ class CurrentController(FlightPlanner):
 
         # slew rate limiter variables
         self.last_target_velocity = self.base_ff_velocity
-        self.max_acceleration = 5.0      # m/s^2 
+        self.max_acceleration = 3.0      # m/s^2 
 
         # subscribers
 
@@ -115,6 +115,7 @@ class CurrentController(FlightPlanner):
         self.drone_vel_mag = math.sqrt(msg.vx**2 + msg.vy**2)
 
     def _pub_traj_setpoint(self):
+        return
         #self.goto.position = [math.nan, math.nan, math.nan]  # ignore position setpoint
         self.goto.position = list(self.traj.path(self.pathtime) * 10)
         #self.goto.velocity = [self.target_velocity, 0.0, 0.0]
@@ -155,12 +156,15 @@ class CurrentController(FlightPlanner):
             self.goto.velocity = [0.0, 0.0, 0.0]
             self._pub_traj_setpoint()
 
-            command = CoreCommand.Request()
-            command.request.command = 2
-            self._core_command_client.call_async(command)
-            command = CoreCommand.Request()
-            command.request.command = 7 # CORE_TRAJ request command
-            self._core_command_client.call_async(command)
+            #for i in range(3):
+            #    self._pub_traj_setpoint()
+            #    time.sleep(0.001)
+            #command = CoreCommand.Request()
+            #command.request.command = 2
+            #self._core_command_client.call_async(command)
+            #command = CoreCommand.Request()
+            #command.request.command = 7 # CORE_TRAJ request command
+            #self._core_command_client.call_async(command)
 
             return
         if self.pathtime > self.duration - 1:
