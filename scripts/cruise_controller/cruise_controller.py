@@ -29,13 +29,14 @@ class CurrentController(FlightPlanner):
         self.drone_vel_mag = 0.0
         self.pathtime = 0
         # inner loop vars
-        self.target_velocity = 0.0  # Output of inner loop
-        self.integral_limit = 15.0  # m/s, max contribution of integral term to velocity setpoint
+        self.intermediate_target_velocity = 0.0  # current controller, feedforward + P + I
+        self.target_velocity = 0.0  # Output of inner loop (curvature slowdown factored)
+        self.integral_limit = 10.0  # m/s, max contribution of integral term to velocity setpoint
         # outer loop vars
-        self.target_current_draw = 40.0 # input of outer loop
+        self.target_current_draw = 30.0 # input of outer loop
         self.current_setpoint = self.target_current_draw   # Output of outer loop, defaults to 60A
-        self.max_current = 75.0
-        self.min_current = 35.0
+        self.max_current = 45.0
+        self.min_current = 15.0
         self.base_ff_velocity = self.get_feedforward_velocity(self.current_setpoint)
         self.start_time = self.get_clock().now().nanoseconds / 1e9
         self.initial_capacity_consumed = None
@@ -68,12 +69,12 @@ class CurrentController(FlightPlanner):
         )
 
         # real DDS battery stuff
-        # self._battery_subscriber = self.create_subscription(
-        #     BatteryStatus,
-        #     "/fmu/out/battery_status",
-        #     self._battery_cb,
-        #     10,
-        # )
+        self._battery_subscriber = self.create_subscription(
+            BatteryStatus,
+            "/fmu/out/battery_status",
+            self._battery_cb,
+            10,
+        )
 
         # local position for velocity feedback
         self._local_pos_subscriber = self.create_subscription(
@@ -92,19 +93,22 @@ class CurrentController(FlightPlanner):
         self.inner_timer = self.create_timer(self.inner_dt, self.inner_current_loop)
         self.outer_timer = self.create_timer(self.outer_dt, self.outer_capacity_loop)
 
-    def _current_cb(self, msg: Float32) -> None:
+    def _manual_ema(self, current_val, previous_ema, alpha):
+        return (alpha * current_val) + ((1.0 - alpha) * previous_ema)
+    
+    def _current_cb(self, msg: Float32) -> None: # sim
         self.current_draw = msg.data
 
-    def _capacity_cb(self, msg: Float32) -> None:
+    def _capacity_cb(self, msg: Float32) -> None: # sim
         self.capacity_consumed = msg.data / 1000.0  # convert mAh to Ah
         if self.initial_capacity_consumed is None:  # initialize starting point for coulomb counting
             self.initial_capacity_consumed = self.capacity_consumed
 
-    # def _battery_cb(self, msg: BatteryStatus) -> None:
-    #     self.current_draw = msg.current_a
-    #     self.capacity_consumed = msg.discharged_mah / 1000.0  # Convert to Ah
-    #     if self.initial_capacity_consumed is None:
-    #         self.initial_capacity_consumed = self.capacity_consumed
+    def _battery_cb(self, msg: BatteryStatus) -> None:
+        self.current_draw = self._manual_ema(msg.current_a, self.current_draw, 0.1)
+        self.capacity_consumed = msg.discharged_mah / 1000.0  # Convert to Ah
+        if self.initial_capacity_consumed is None:
+            self.initial_capacity_consumed = self.capacity_consumed
 
     def _local_pos_cb(self, msg: VehicleLocalPosition) -> None:
         # calculate velocity magnitude from xy vectors
@@ -121,8 +125,9 @@ class CurrentController(FlightPlanner):
         """
         Solves the cubic thrust curve for now: 0.003v^3 - 0.1v + 25 - I_target = 0
         This will be updated to the model we derive from experimental data.
+        I(v) = 0.00621v^3 - 0.1010v^2 + 0.4244v + 24.7248
         """
-        coeffs = [0.003, 0.0, -0.1, 25.0 - target_current]
+        coeffs = [0.00621, -0.1010, 0.4244, 24.7248 - target_current]
         roots = np.roots(coeffs)
         real_roots = roots[np.isreal(roots)].real
         
@@ -138,13 +143,8 @@ class CurrentController(FlightPlanner):
             self.unitialized_traj = False
             x, y, z = self._position.x / 10, self._position.y / 10, self._position.z / 10
             paths = [
-                trajectory.Line(np.array([x, y, z]), np.array([x, y + 10, z]), duration=10),
-                trajectory.Circle(np.array([x, y + 10, z]), np.array([x + 5, y + 10, z]), cycles=0.5, axis=np.array([0, 0, -1])),
-                trajectory.Circle(np.array([x + 10, y + 10, z]), np.array([x + 12, y + 10, z]), cycles=1),
-                trajectory.Line(np.array([x + 10, y + 10, z]), np.array([x + 10, y - 10, z]), duration=20),
-                trajectory.Line(np.array([x + 10, y - 10, z]), np.array([x + 15, y - 15, z]), duration=50**0.5),
-                trajectory.Line(np.array([x + 15, y - 15, z]), np.array([x + 30, y, z]), duration=450**0.5),
-                trajectory.Line(np.array([x + 30, y, z]), np.array([x, y, z]), duration=30),
+                trajectory.Line(np.array([x, y, z]), np.array([x - 110, y -545, z]), duration=556),
+                trajectory.Line(np.array([x - 110, y - 545, z]), np.array([x, y, z]), duration=55.6),
             ]
             for i, traj in enumerate(paths[:-1]):
                 traj.next = paths[i + 1]
@@ -166,22 +166,25 @@ class CurrentController(FlightPlanner):
         if self.pathtime > self.duration - 1:
             sys.exit()
 
-        error = self.current_setpoint - self.current_draw
-        # error = self.current_setpoint - self.current_draw + estimate_correction(self.target_velocity, self.intermediate_target_velocity) # back calculation for anti-windup
-        p_term = self.kp_inner * error
+        if self.pathtime < 556:
+            error = self.current_setpoint - self.current_draw
+            # error = self.current_setpoint - self.current_draw + estimate_correction(self.target_velocity, self.intermediate_target_velocity) # back calculation for anti-windup
+            p_term = self.kp_inner * error
 
-        # anti-windup by scaling integral based on how close we are to target vel
-        safe_target_vel = max(self.target_velocity, 0.1) # Prevent div by 0
-        vel_ratio = self.drone_vel_mag / safe_target_vel
-        vel_ratio = max(0.0, min(vel_ratio, 1.0)) # Clamp between 0 and 1
+            # anti-windup by scaling integral based on how close we are to target vel
+            safe_target_vel = max(self.target_velocity, 0.1) # Prevent div by 0
+            vel_ratio = self.drone_vel_mag / safe_target_vel
+            vel_ratio = max(0.0, min(vel_ratio, 1.0)) # Clamp between 0 and 1
 
-        self.stored_integral += (error * self.ki_inner * self.inner_dt) * vel_ratio
+            self.stored_integral += (error * self.ki_inner * self.inner_dt) * vel_ratio
 
-        # clamp integral action
-        self.stored_integral = max(-self.integral_limit, min(self.stored_integral, self.integral_limit))
+            # clamp integral action
+            self.stored_integral = max(-self.integral_limit, min(self.stored_integral, self.integral_limit))
 
-        # raw target vel
-        self.intermediate_target_velocity = self.base_ff_velocity + p_term + self.stored_integral
+            # raw target vel
+            self.intermediate_target_velocity = self.base_ff_velocity + p_term + self.stored_integral
+        else:
+            self.intermediate_target_velocity = 1
 
         # projection and curvature
         self.pathtime = self.projection()
@@ -246,7 +249,7 @@ class CurrentController(FlightPlanner):
         slowdown = 1
         last_v = self.traj.velocity(self.pathtime - 9)
         for dt in np.arange(-10, 10, 0.1):
-            v = self.traj.velocity(self.pathtime + 1 + dt)
+            v = self.traj.velocity(self.pathtime + (1 + dt)*7)
             slowdown += 0.4 * np.linalg.norm(v - last_v) * (2 - abs(dt)/5.05)
             last_v = v
         return max(1 / slowdown, 0.2)
