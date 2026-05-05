@@ -86,6 +86,7 @@ class CurrentController(FlightPlanner):
 
         # pubs
         self.goto = TrajectorySetpoint()
+        self.goto.heading = math.nan
 
         # timers
         self.inner_dt = 0.01  # 100 Hz
@@ -115,9 +116,8 @@ class CurrentController(FlightPlanner):
         self.drone_vel_mag = math.sqrt(msg.vx**2 + msg.vy**2)
 
     def _pub_traj_setpoint(self):
-        return
         #self.goto.position = [math.nan, math.nan, math.nan]  # ignore position setpoint
-        self.goto.position = list(self.traj.path(self.pathtime) * 10)
+        self.goto.position = list(self.traj.path(self.pathtime))
         #self.goto.velocity = [self.target_velocity, 0.0, 0.0]
         self.goto.velocity = list(self.traj.velocity(self.pathtime) * self.target_velocity)
         self._traj_publisher.publish(self.goto)
@@ -142,7 +142,7 @@ class CurrentController(FlightPlanner):
         """Update target velocity based on current tracking error and curvature."""
         if self.unitialized_traj:
             self.unitialized_traj = False
-            x, y, z = self._position.x / 10, self._position.y / 10, self._position.z / 10
+            x, y, z = self._position.x, self._position.y, self._position.z
             paths = [
                 trajectory.Line(np.array([x, y, z]), np.array([x - 110, y -545, z]), duration=556),
                 trajectory.Line(np.array([x - 110, y - 545, z]), np.array([x, y, z]), duration=55.6),
@@ -156,15 +156,15 @@ class CurrentController(FlightPlanner):
             self.goto.velocity = [0.0, 0.0, 0.0]
             self._pub_traj_setpoint()
 
-            #for i in range(3):
-            #    self._pub_traj_setpoint()
-            #    time.sleep(0.001)
-            #command = CoreCommand.Request()
-            #command.request.command = 2
-            #self._core_command_client.call_async(command)
-            #command = CoreCommand.Request()
-            #command.request.command = 7 # CORE_TRAJ request command
-            #self._core_command_client.call_async(command)
+            for i in range(3):
+                self._pub_traj_setpoint()
+                time.sleep(0.001)
+            command = CoreCommand.Request()
+            command.request.command = 2
+            self._core_command_client.call_async(command)
+            command = CoreCommand.Request()
+            command.request.command = 7 # CORE_TRAJ request command
+            self._core_command_client.call_async(command)
 
             return
         if self.pathtime > self.duration - 1:
@@ -240,7 +240,7 @@ class CurrentController(FlightPlanner):
     def projection(self) -> bool:
         closest = self.pathtime
         closest_dist = 1e6
-        cur_pos = np.array([self._position.x, self._position.y, self._position.z]) / 10
+        cur_pos = np.array([self._position.x, self._position.y, self._position.z])
         for t in np.arange(max(self.pathtime - 5, 0), min(self.pathtime + 5, self.duration), 0.1):
             pos = self.traj.path(t)
             dist = np.linalg.norm(cur_pos - pos)
