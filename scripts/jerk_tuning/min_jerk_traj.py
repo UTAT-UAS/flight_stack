@@ -344,10 +344,10 @@ class BTreeFlightPlanner(FlightPlanner):
 
     constants = [
         3 * np.array([20/T, -8, -12]) / (2*T**2),
-        4 * np.array([-30/T, -14, -16]) / (2*T**3),
+        4 * np.array([-30/T, 14, 16]) / (2*T**3),
         5 * np.array([12/T, -6, -6]) / (2*T**4),
     ]
-    powers = [[(-x)**i for i in range(2, 5)] for x in np.arange(-horizon, 0, resolution)]
+    powers = [[(-x/expected_v_cruise)**i for i in range(2, 5)] for x in np.arange(-horizon, 0, resolution)]
     def velocity_scale(self) -> float:
         """
         Min Jerk Position interpolation polynomial:
@@ -388,8 +388,8 @@ class BTreeFlightPlanner(FlightPlanner):
             vy1 = vel1[1]
 
             sum_v_x += vx0 + np.dot(np.matmul(self.constants, [dpx, vx1, vx0]), self.powers[i])
-            sum_v_y += vx0 + np.dot(np.matmul(self.constants, [dpy, vy1, vy0]), self.powers[i])
-        return (sum_v_x**2 + sum_v_y**2) ** 0.5 / (len(self.powers) * len(self.powers))
+            sum_v_y += vy0 + np.dot(np.matmul(self.constants, [dpy, vy1, vy0]), self.powers[i])
+        return (sum_v_x**2 + sum_v_y**2) ** 0.5 / (len(self.powers))
 
 
     def main_loop(self):
