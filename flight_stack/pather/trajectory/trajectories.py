@@ -64,6 +64,7 @@ class Line(Trajectory):
 
         delta = end - start
         def path(t: Union[int, float, np.number]):
+            if t < 0: return start
             if t < duration:
                 return start + delta * t / duration
             if self.next: return self.next.path(t - duration)
@@ -106,6 +107,7 @@ class Circle(Trajectory):
         endpoint = center + math.cos(2 * math.pi * cycles) * diff_orth + math.sin(2 * math.pi * cycles) * w
         duration = 2 * math.pi * cycles / dilation
         def path(t: Union[int, float, np.number]):
+            if t < 0: return start
             if t < duration:
                 return center + math.cos(dilation * t) * diff_orth + math.sin(dilation * t) * w
             if self.next: return self.next.path(t - duration)
@@ -144,6 +146,7 @@ class Ellipse(Trajectory):
 
         endpoint = center + math.cos(dilation * duration) * diff_orth + math.sin(dilation * duration) * cross_axis
         def path(t: Union[int, float, np.number]):
+            if t < 0: return start
             if t < duration:
                 return center + math.cos(dilation * t) * diff_orth + math.sin(dilation * t) * cross_axis
             if self.next: return self.next.path(t - duration)
@@ -199,6 +202,7 @@ class Spiral(Trajectory):
         zero_v = np.array([0 for _ in range(len(start))])
         if theta_start > theta_end:
             def path(t: Union[int, float, np.number]):
+                if t < 0: return start
                 if t < duration:
                     theta = (theta_start_sq - t * speed_norm) ** 0.5
                     return spiral_gap * theta * (math.cos(theta - theta_start) * diff_orth + math.sin(theta - theta_start) * w) + center
@@ -216,6 +220,7 @@ class Spiral(Trajectory):
 
         else:
             def path(t: Union[int, float, np.number]):
+                if t < 0: return start
                 if t < duration:
                     theta = (theta_start_sq + t * speed_norm) ** 0.5
                     return spiral_gap * theta * (math.cos(theta - theta_start) * diff_orth + math.sin(theta - theta_start) * w) + center
