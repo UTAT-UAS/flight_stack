@@ -29,7 +29,7 @@ class CurrentController(FlightPlanner):
         self.drone_vel_mag = 0.0
         self.pathtime = 0
         # inner loop vars
-        self.intermediate_target_velocity = 0.0  # current controller, feedforward + P + I
+        self.cruise_target_velocity = 0.0  # current controller, feedforward + P + I
         self.target_velocity = 0.0  # Output of inner loop (curvature slowdown factored)
         self.integral_limit = 10.0  # m/s, max contribution of integral term to velocity setpoint
         # outer loop vars
@@ -172,7 +172,7 @@ class CurrentController(FlightPlanner):
 
         if self.pathtime < 556:
             error = self.current_setpoint - self.current_draw
-            # error = self.current_setpoint - self.current_draw + estimate_correction(self.target_velocity, self.intermediate_target_velocity) # back calculation for anti-windup
+            # error = self.current_setpoint - self.current_draw + estimate_correction(self.target_velocity, self.cruise_target_velocity) # back calculation for anti-windup
             p_term = self.kp_inner * error
 
             # anti-windup by scaling integral based on how close we are to target vel
@@ -186,14 +186,14 @@ class CurrentController(FlightPlanner):
             self.stored_integral = max(-self.integral_limit, min(self.stored_integral, self.integral_limit))
 
             # raw target vel
-            self.intermediate_target_velocity = self.base_ff_velocity + p_term + self.stored_integral
+            self.cruise_target_velocity = self.base_ff_velocity + p_term + self.stored_integral
         else:
-            self.intermediate_target_velocity = 1
+            self.cruise_target_velocity = 1
 
         # projection and curvature
         self.pathtime = self.projection()
         curvature_scale = self.velocity_scale()
-        self.target_velocity = self.intermediate_target_velocity * curvature_scale
+        self.target_velocity = self.cruise_target_velocity * curvature_scale
 
         # slew rate limiter to velocity output
         max_delta = self.max_acceleration * self.inner_dt
