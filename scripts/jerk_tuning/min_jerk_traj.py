@@ -20,7 +20,7 @@ hyperparameters = [
     {}
 ]
 
-class MinJerkTraj(BTNode):
+class MinJerkTraj(utils.BTNode):
     def __init__(self, name, fp:FlightPlanner, traj:trajectory.Trajectory, params:dict):
         super().__init__(name)
         self.fp = fp
@@ -66,7 +66,7 @@ class MinJerkTraj(BTNode):
         # Action based, tries to clock as fast as btree
         # How to determine failure? built in time out?
         if self.pathtime > self.duration - 1:
-            self.status = STATUS.SUCCESS
+            self.status = utils.STATUS.SUCCESS
             return self.status
         self.pathtime = self.projection()
         self.goto.position = list(self.traj.path(self.pathtime))
@@ -360,9 +360,10 @@ class BTreeFlightPlanner(FlightPlanner):
 
         assumptions:
         a = 0
+        trajectory has unit velocity
 
         Returns:
-            float: 
+            float: 0-1 for fraction of cruise speed
         """
         # parameters
         T = 3
@@ -389,7 +390,7 @@ class BTreeFlightPlanner(FlightPlanner):
 
             sum_v_x += vx0 + np.dot(np.matmul(self.constants, [dpx, vx1, vx0]), self.powers[i])
             sum_v_y += vy0 + np.dot(np.matmul(self.constants, [dpy, vy1, vy0]), self.powers[i])
-        return (sum_v_x**2 + sum_v_y**2) ** 0.5 / (len(self.powers))
+        return (sum_v_x**2 + sum_v_y**2) ** 0.5 / len(self.powers)
 
 
     def main_loop(self):
@@ -412,13 +413,13 @@ class BTreeFlightPlanner(FlightPlanner):
             self.duration += paths[-1].duration
             self.traj = paths[0]
 
-        self.btree.tick()
+        '''self.btree.tick()
         if self.btree.status == manager.STATUS.SUCCESS:
             print("mission complete")
             exit()
         elif self.btree.status == manager.STATUS.FAILURE:
             print("mission failed")
-            exit()
+            exit()'''
 
 
 def main(args=None):
