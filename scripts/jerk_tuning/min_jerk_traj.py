@@ -149,7 +149,8 @@ class BTreeFlightPlanner(FlightPlanner):
 
         # pubs
         self.goto = TrajectorySetpoint()
-        self.goto.heading = math.nan
+        self.goto.yaw = math.nan
+        self.goto.yawspeed = math.nan
 
         '''# behavior tree assembly
         self.btree = manager.BehaviorTree("cruise_control_and_curvature_test")

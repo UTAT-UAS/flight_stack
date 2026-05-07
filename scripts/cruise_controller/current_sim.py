@@ -67,7 +67,10 @@ class CurrentSim(Node):
         i_motors = sum(i_motor) + 0.5  # add idle current
 
         # apply velocity correction factor since gazebo does not simulate this
-        i_del = -0.1 * self._v_mag + 0.003 * self._v_mag**3
+        i_del = 0.4244 * self._v_mag - 0.1010 * self._v_mag**2 + 0.00621 * self._v_mag**3
+        
+        # TODO: apply noise to both then add together to get model
+        
         i_model = i_motors + i_del
 
         return abs(i_model)
@@ -89,6 +92,8 @@ class CurrentSim(Node):
         mah_msg = Float32()
         mah_msg.data = self._discharged_mah
         self._mah_publisher.publish(mah_msg)
+
+        print(f"Current draw: {current_amps:.2f} A, Discharged: {self._discharged_mah:.2f} mAh, Velocity: {self._v_mag:.2f} m/s")
 
 
 
