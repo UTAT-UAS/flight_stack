@@ -10,13 +10,14 @@ class CurrentController():
         # outer loop vars
         self.start_time = start_time
         self.initial_capacity_consumed = initial_capacity_consumed
-        self.target_current_draw = 60.0 # input of outer loop
+        self.target_current_draw = 30.0 # input of outer loop
         self.target_ah = 0.0
         self.discharged_ah_corrected = 0.0
         self.current_setpoint = self.target_current_draw   # Output of outer loop, defaults to 60A 
-        self.max_current = 75.0
-        self.min_current = 35.0
+        self.max_current = 45.0
+        self.min_current = 15.0
         self.base_ff_speed = self.get_feedforward_velocity(self.current_setpoint)
+        self.typical_cruise_spd = self.base_ff_speed
         
         self.kp_outer = 20.0  # Amps to adjust per Ah error
 
@@ -70,6 +71,9 @@ class CurrentController():
 
         # raw target vel
         self.target_spd = self.base_ff_speed + p_term + self.stored_integral
+        # track typical commanded speed to scale min jerk speed
+        a = 0.001 + 0.003*vel_ratio*vel_ratio
+        self.typical_cruise_spd = a * self.target_spd + (1-a) * self.typical_cruise_spd
 
         # slew rate limiter to velocity output
         max_delta = self.max_acceleration * self.inner_dt

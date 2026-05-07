@@ -39,6 +39,19 @@ class Custom(Trajectory):
         self.endpoint = endpoint
         self.duration = duration
 
+class Wrapper(Trajectory):
+    def __init__(self, child: Trajectory):
+        self.__dict__['child'] = child
+
+    def __getattr__(self, name):
+        return getattr(self.child, name)
+
+    def __setattr__(self, name, val):
+        setattr(self.child, name, val)
+
+    def replace_child(self, child: Trajectory):
+        self.__dict__['child'] = child
+
 class Pause(Trajectory):
     def __init__(self, loc: np.ndarray, duration: Union[int, float, np.number]):
         super().__init__()
