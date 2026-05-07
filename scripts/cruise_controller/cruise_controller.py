@@ -18,14 +18,14 @@ class CurrentController():
         self.base_ff_speed = self.get_feedforward_velocity(self.current_setpoint)
         self.typical_cruise_spd = self.base_ff_speed
 
-        self.kp_outer = 20.0  # Amps to adjust per Ah error
+        self.kp_outer = 30.0  # Amps to adjust per Ah error
 
         # inner loop vars
         self.target_spd = 0.0  # Output of inner loop
         self.integral_limit = 10.0  # m/s, max contribution of integral term to velocity setpoint
         self.stored_integral = 0.0
 
-        self.kp_inner = 0.5
+        self.kp_inner = 0.25
         self.ki_inner = 0.1
 
 
@@ -33,8 +33,8 @@ class CurrentController():
         self.max_acceleration = 5.0      # m/s^2 
 
         # timers
-        self.inner_dt = 0.01  # 100 Hz
-        self.outer_dt = 0.1   # 10 Hz
+        self.inner_dt = 0.01  # 100 Hz 
+        self.outer_dt = 0.1  # 10 Hz
 
 
     def get_feedforward_velocity(self, target_current: float) -> float:
@@ -71,7 +71,7 @@ class CurrentController():
         # raw target vel
         self.target_spd = self.base_ff_speed + p_term + self.stored_integral
         # track typical commanded speed to scale min jerk speed
-        a = 0.001 + 0.003*vel_ratio*vel_ratio
+        a = 0.0001 + 0.0003*vel_ratio*vel_ratio
         self.typical_cruise_spd = a * self.target_spd + (1-a) * self.typical_cruise_spd
 
         # slew rate limiter to velocity output
