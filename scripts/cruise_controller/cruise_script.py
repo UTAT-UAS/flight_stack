@@ -92,6 +92,14 @@ class CruiseNode(FlightPlanner):
         self._traj_timer = self.create_timer(0.01, self._pub_traj_setpoint)
 
     def _initialize(self):
+        if self.initial_capacity_consumed is None:
+            self.get_logger().info("Waiting for initial capacity reading...")
+            return  # not ready yet, check again on next timer tick
+        x, y, z = self._position.x, self._position.y, self._position.z
+        while x==0 or y==0 or z==0:
+            self.get_logger().info(f"Invalid position: {x}, {y}, {z}")
+            return
+
         self._initialize_current_controller()
         self._initialize_minjerk_controller()
 
@@ -112,8 +120,6 @@ class CruiseNode(FlightPlanner):
 
     def _initialize_current_controller(self):
         '''get initial conditions for current controller'''
-        if self.initial_capacity_consumed is None:
-            return  # not ready yet, check again on next timer tick
 
         # ready: create core and control timers once
         start_time = self.get_clock().now().nanoseconds / 1e9
@@ -121,7 +127,7 @@ class CruiseNode(FlightPlanner):
 
     def _initialize_minjerk_controller(self):
         ''' set up min jerk trajectory '''
-        x, y, z = self._position.x, self._position.y, -2.5#self._position.z
+        x, y, z = self._position.x, self._position.y, self._position.z
         paths = [
             trajectory.Line(np.array([x, y, z]), np.array([x - 110, y -545, z]), duration=556),
             trajectory.Line(np.array([x - 110, y - 545, z]), np.array([x, y, z]), duration=556),
@@ -135,7 +141,7 @@ class CruiseNode(FlightPlanner):
             fp=self,
             traj=self.traj,
             target_vel=self.cc.base_ff_speed,
-            forecast_time=4,
+            forecast_time=10,
             resolution=1,
             project_ahead=0.5
         )
@@ -185,15 +191,15 @@ class CruiseNode(FlightPlanner):
 
         self.cc.outer_capacity_ctrl(self.capacity_consumed, self.get_clock().now().nanoseconds / 1e9)
 
-        print(f"Current Draw: {self.current_draw:.2f} A, Commanded Current: {self.cc.current_setpoint:.2f} A, FF Vel: {self.cc.base_ff_speed:.2f} m/s\nTarget Ah: {self.cc.target_ah:.3f} Ah, Consumed Ah: {self.cc.discharged_ah_corrected:.3f} Ah, Ah Error: {self.cc.target_ah - self.cc.discharged_ah_corrected:.3f} Ah, Cruise Speed target: {self.target_cruise_spd:.3f}, MinJerk Speed target: {self.target_min_jerk_spd:.3f}")
+        self.get_logger().info(f"Current Draw: {self.current_draw:.2f} A, Commanded Current: {self.cc.current_setpoint:.2f} A, FF Vel: {self.cc.base_ff_speed:.2f} m/s\nTarget Ah: {self.cc.target_ah:.3f} Ah, Consumed Ah: {self.cc.discharged_ah_corrected:.3f} Ah, Ah Error: {self.cc.target_ah - self.cc.discharged_ah_corrected:.3f} Ah, Cruise Speed target: {self.target_cruise_spd:.3f}, MinJerk Speed target: {self.target_min_jerk_spd:.3f}")
 
     def _inner_cb(self):
         if self.cc is None:
             return  # controller not initialized yet
-        
+
         # check for completion
         if self.mj.pathtime > self.mj.duration - self.mj.project_ahead:
-            print("Path completed")
+            self.get_logger().info("Path completed")
             self.inner_timer.cancel()
             self.inner_timer = None
             self.outer_timer.cancel()
@@ -202,17 +208,19 @@ class CruiseNode(FlightPlanner):
             self.target_pos = list(self.traj.path(self.mj.duration))
             self.target_vel = [0.0, 0.0, 0.0]
             self._pub_traj_setpoint()
-        
+
         self.target_cruise_spd = self.cc.inner_current_ctrl(self.current_draw, self.drone_vel_mag)
 
         self.mj.pathtime = self.mj.projection()
-        self.target_min_jerk_spd = self.mj.velocity_scale() * 1.1 * self.cc.typical_cruise_spd / self.mj.target_vel # 10% wiggle room for cruise controller
+        vx, vy = self.mj.velocity_scale()
+        norm = (vx**2 + vy**2)**0.5
+        self.target_min_jerk_spd = norm * 1.1 * self.cc.typical_cruise_spd / self.mj.target_vel # 10% wiggle room for cruise controller
 
         # allocator function
         self.target_spd = min(self.target_cruise_spd, self.target_min_jerk_spd)
 
         self.target_pos = list(self.traj.path(self.mj.pathtime))
-        self.target_vel = list(self.traj.velocity(self.mj.pathtime) * self.target_spd)
+        self.target_vel = [vx * self.target_spd / norm, vy * self.target_spd / norm, 0.0]
 
 
 

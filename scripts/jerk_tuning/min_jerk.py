@@ -109,7 +109,6 @@ class MinJerkTraj(utils.BTNode):
                 pos1 = self.traj.path(t1)
                 vel1 = -self.traj.velocity(t1)
 
-
             dpx = pos1[0] - pos0[0]
             vx0 = vel0[0]
             vx1 = vel1[0]
@@ -120,8 +119,8 @@ class MinJerkTraj(utils.BTNode):
 
             sum_v_x += vx0 + np.dot(np.matmul(self.constants, [dpx, vx1, vx0]), self.powers[i])
             sum_v_y += vy0 + np.dot(np.matmul(self.constants, [dpy, vy1, vy0]), self.powers[i])
-        #return sum_v_x/len(self.powers), sum_v_y/len(self.powers)
-        return (sum_v_x**2 + sum_v_y**2) ** 0.5 / len(self.powers)
+        return sum_v_x/len(self.powers), sum_v_y/len(self.powers)
+        #return (sum_v_x**2 + sum_v_y**2) ** 0.5 / len(self.powers)
 
     def tick(self):
         # Action based, tries to clock as fast as btree
@@ -134,14 +133,18 @@ class MinJerkTraj(utils.BTNode):
             return self.status
 
         self.pathtime = self.projection()
-        self.target_spd = self.velocity_scale()
-        print(f"{self.name} target speed: {self.target_spd}")
+        #self.target_spd = self.velocity_scale()
+        #print(f"{self.name} target speed: {self.target_spd}")
 
         self.traj_sp.position = list(self.traj.path(self.pathtime))
-        self.traj_sp.velocity = list(self.traj.velocity(self.pathtime) * self.target_spd)
-        #vx, vy = self.velocity_scale()
-        #print(vx, vy)
-        #self.traj_sp.velocity = [vx, vy, 0.0]
+        #self.traj_sp.velocity = list(self.traj.velocity(self.pathtime) * self.target_spd)
+        vx, vy = self.velocity_scale()
+        print(vx, vy, self.traj_sp.position)
+        self.traj_sp.velocity = [vx, vy, 0.0]
+        self.traj_sp.yaw = math.nan
+        self.traj_sp.yawspeed = math.nan
+
+        #print(f"{self.traj_sp.position}")
         self.fp._traj_publisher.publish(self.traj_sp)
         return self.status
 
@@ -153,11 +156,7 @@ class BTreeFlightPlanner(FlightPlanner):
         self.traj = trajectory.Wrapper(trajectory.Custom(None, 0, np.array([]), 0))
         self.duration = 0
         # state vars
-        self.unitialized_traj = True
-        self.drone_vel_mag = 0.0
         self.pathtime = 0
-        self.expected_cruise_velocity = 15  # initial guess of steady state cruise velocity
-        self.target_velocity = 0.0  # Output of inner loop (curvature slowdown factored)
 
         # pubs
         self.goto = TrajectorySetpoint()
@@ -187,7 +186,7 @@ class BTreeFlightPlanner(FlightPlanner):
                         fp=self,
                         traj=self.traj,
                         target_vel=5,
-                        forecast_time=3,
+                        forecast_time=4,
                         resolution=0.1,
                         project_ahead=0.1
                     )
@@ -203,10 +202,14 @@ class BTreeFlightPlanner(FlightPlanner):
 
         if self.duration == 0:
             x, y, z = self._position.x, self._position.y, self._position.z
+            if (x==0 or y==0 or z==0):
+                print(f"{x}, {y}, {z}")
+                return
+
             paths = [
                 trajectory.Line(np.array([x, y, z]), np.array([x, y + 10, z]), duration=10),
                 trajectory.Circle(np.array([x, y + 10, z]), np.array([x + 5, y + 10, z]), cycles=0.5, axis=np.array([0, 0, -1])),
-                trajectory.Circle(np.array([x + 10, y + 10, z]), np.array([x + 12, y + 10, z]), cycles=1),
+                #trajectory.Circle(np.array([x + 10, y + 10, z]), np.array([x + 12, y + 10, z]), cycles=1),
                 trajectory.Line(np.array([x + 10, y + 10, z]), np.array([x + 10, y - 10, z]), duration=20),
                 trajectory.Line(np.array([x + 10, y - 10, z]), np.array([x + 15, y - 15, z]), duration=50**0.5),
                 trajectory.Line(np.array([x + 15, y - 15, z]), np.array([x + 30, y, z]), duration=450**0.5),
