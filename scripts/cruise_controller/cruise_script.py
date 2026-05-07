@@ -1,15 +1,13 @@
 import math
-import time
 import numpy as np
 from std_msgs.msg import Float32
 import rclpy
 from flight_stack.flight_stack import FlightPlanner
 from flight_stack.pather import trajectory
-from flight_stack_msgs.srv import CoreCommand
-from px4_msgs.msg import VehicleStatus, VehicleLocalPosition, BatteryStatus, TrajectorySetpoint, OffboardControlMode
+from flight_stack.btree.actions import MinJerkTraj
+from px4_msgs.msg import VehicleLocalPosition, BatteryStatus, TrajectorySetpoint, OffboardControlMode
 from rclpy.qos import QoSPresetProfiles
 from cruise_controller import CurrentController
-from min_jerk import MinJerkTraj
 
 class CruiseNode(FlightPlanner):
 
@@ -131,8 +129,16 @@ class CruiseNode(FlightPlanner):
         for i, traj in enumerate(paths[:-1]):
             traj.next = paths[i + 1]
         self.traj = paths[0]
-    
-        self.mj = MinJerkTraj("min_jerk", self, self.traj, self.cc.base_ff_speed, 4)
+
+        self.mj = MinJerkTraj(
+            name="min_jerk",
+            fp=self,
+            traj=self.traj,
+            target_vel=self.cc.base_ff_speed,
+            forecast_time=4,
+            resolution=1,
+            project_ahead=0.5
+        )
         self.mj.initialize()
 
     def _manual_ema(self, current_val, previous_ema, alpha):
@@ -184,7 +190,19 @@ class CruiseNode(FlightPlanner):
     def _inner_cb(self):
         if self.cc is None:
             return  # controller not initialized yet
+        
+        # check for completion
+        if self.mj.pathtime > self.mj.duration - self.mj.project_ahead:
+            print("Path completed")
+            self.inner_timer.cancel()
+            self.inner_timer = None
+            self.outer_timer.cancel()
+            self.outer_timer = None
 
+            self.target_pos = list(self.traj.path(self.mj.duration))
+            self.target_vel = [0.0, 0.0, 0.0]
+            self._pub_traj_setpoint()
+        
         self.target_cruise_spd = self.cc.inner_current_ctrl(self.current_draw, self.drone_vel_mag)
 
         self.mj.pathtime = self.mj.projection()
@@ -196,13 +214,7 @@ class CruiseNode(FlightPlanner):
         self.target_pos = list(self.traj.path(self.mj.pathtime))
         self.target_vel = list(self.traj.velocity(self.mj.pathtime) * self.target_spd)
 
-        # check for completion
-        if self.mj.pathtime > self.mj.duration - self.mj.project_ahead:
-            print("Path completed")
-            self.inner_timer.cancel()
-            self.inner_timer = None
-            self.outer_timer.cancel()
-            self.outer_timer = None
+
 
 
 def main(args=None):
