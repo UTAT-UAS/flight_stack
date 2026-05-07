@@ -8,7 +8,7 @@ from flight_stack.btree.actions import MinJerkTraj
 from px4_msgs.msg import VehicleLocalPosition, BatteryStatus, TrajectorySetpoint, OffboardControlMode
 from rclpy.qos import QoSPresetProfiles
 from cruise_controller import CurrentController
-
+from flight_stack_msgs.srv import CoreCommand
 class CruiseNode(FlightPlanner):
 
     def __init__(self):
@@ -17,26 +17,26 @@ class CruiseNode(FlightPlanner):
         # subscribers
 
         # this is for sim only
-        self._current_subscriber = self.create_subscription(
-            Float32,
-            "sim/current_draw",
-            self._current_cb,
-            10,
-        )
-        self._capacity_subscriber = self.create_subscription(
-            Float32,
-            "sim/discharged_mah",
-            self._capacity_cb,
-            10,
-        )
+        # self._current_subscriber = self.create_subscription(
+        #     Float32,
+        #     "sim/current_draw",
+        #     self._current_cb,
+        #     10,
+        # )
+        # self._capacity_subscriber = self.create_subscription(
+        #     Float32,
+        #     "sim/discharged_mah",
+        #     self._capacity_cb,
+        #     10,
+        # )
 
         # real DDS battery stuff
-        # self._battery_subscriber = self.create_subscription(
-        #     BatteryStatus,
-        #     "/fmu/out/battery_status",
-        #     self._battery_cb,
-        #     QoSPresetProfiles.SENSOR_DATA.value,
-        # )
+        self._battery_subscriber = self.create_subscription(
+            BatteryStatus,
+            "/fmu/out/battery_status",
+            self._battery_cb,
+            QoSPresetProfiles.SENSOR_DATA.value,
+        )
 
         # local position for velocity feedback
         self._local_pos_subscriber = self.create_subscription(
@@ -47,20 +47,20 @@ class CruiseNode(FlightPlanner):
         )
 
         # pubs -> this should be changed to flight stack publisher
-        self._px4_traj_publisher = self.create_publisher(
-            TrajectorySetpoint,
-            "/fmu/in/trajectory_setpoint",
-            QoSPresetProfiles.SYSTEM_DEFAULT.value,
-        )
+        # self._px4_traj_publisher = self.create_publisher(
+        #     TrajectorySetpoint,
+        #     "/fmu/in/trajectory_setpoint",
+        #     QoSPresetProfiles.SYSTEM_DEFAULT.value,
+        # )
         self.traj_sp = TrajectorySetpoint()
         self.target_pos = [0.0, 0.0, 0.0]
         self.target_vel = [0.0, 0.0, 0.0]
 
-        self._offboard_ctrl_publisher = self.create_publisher(
-            OffboardControlMode,
-            "/fmu/in/offboard_control_mode",
-            QoSPresetProfiles.SYSTEM_DEFAULT.value,
-        )
+        # self._offboard_ctrl_publisher = self.create_publisher(
+        #     OffboardControlMode,
+        #     "/fmu/in/offboard_control_mode",
+        #     QoSPresetProfiles.SYSTEM_DEFAULT.value,
+        # )
 
         ### Current controller setup ###
 
@@ -95,8 +95,9 @@ class CruiseNode(FlightPlanner):
         if self.initial_capacity_consumed is None:
             self.get_logger().info("Waiting for initial capacity reading...")
             return  # not ready yet, check again on next timer tick
+        
         x, y, z = self._position.x, self._position.y, self._position.z
-        while x==0 or y==0 or z==0:
+        if x==0 or y==0 or z==0:
             self.get_logger().info(f"Invalid position: {x}, {y}, {z}")
             return
 
@@ -109,7 +110,11 @@ class CruiseNode(FlightPlanner):
         self.traj_sp.yawspeed = math.nan
         self._pub_traj_setpoint()
 
-        self._request_offboard()
+        # self._request_offboard()
+        # request offboard
+        command = CoreCommand.Request()
+        command.request.command = 7 # CORE_TRAJ request command
+        self._core_command_client.call_async(command)
 
         self.inner_timer = self.create_timer(self.cc.inner_dt, self._inner_cb)
         self.outer_timer = self.create_timer(self.cc.outer_dt, self._outer_cb)
@@ -168,21 +173,21 @@ class CruiseNode(FlightPlanner):
         # calculate velocity magnitude from xy vectors
         self.drone_vel_mag = math.sqrt(msg.vx**2 + msg.vy**2)
 
-    def _request_offboard(self):
-        offboard_msg = OffboardControlMode()
-        offboard_msg.timestamp = int(self.get_clock().now().nanoseconds / 1000)
-        offboard_msg.position = False
-        offboard_msg.velocity = True 
-        offboard_msg.acceleration = False
-        offboard_msg.attitude = False
-        offboard_msg.body_rate = False
-        self._offboard_ctrl_publisher.publish(offboard_msg)
+    # def _request_offboard(self):
+    #     offboard_msg = OffboardControlMode()
+    #     offboard_msg.timestamp = int(self.get_clock().now().nanoseconds / 1000)
+    #     offboard_msg.position = False
+    #     offboard_msg.velocity = True 
+    #     offboard_msg.acceleration = False
+    #     offboard_msg.attitude = False
+    #     offboard_msg.body_rate = False
+    #     self._offboard_ctrl_publisher.publish(offboard_msg)
 
     def _pub_traj_setpoint(self):
         self.traj_sp.position = self.target_pos#[math.nan, math.nan, math.nan]
         self.traj_sp.velocity = self.target_vel
         #print(self.target_vel)
-        self._px4_traj_publisher.publish(self.traj_sp)
+        self._traj_publisher.publish(self.traj_sp)
 
     # current controller loops
     def _outer_cb(self):
@@ -221,8 +226,6 @@ class CruiseNode(FlightPlanner):
 
         self.target_pos = list(self.traj.path(self.mj.pathtime))
         self.target_vel = [vx * self.target_spd / norm, vy * self.target_spd / norm, 0.0]
-
-
 
 
 def main(args=None):
