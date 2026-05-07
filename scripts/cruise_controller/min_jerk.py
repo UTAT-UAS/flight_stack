@@ -33,8 +33,8 @@ class MinJerkTraj(utils.BTNode):
         self.T = forecast_time
         self.target_vel = target_vel
         self.horizon = self.T * self.target_vel
-        self.resolution = 0.5
-        self.project_ahead = 0.1
+        self.resolution = 1
+        self.project_ahead = 0.5
         self.constants = []
         self.powers = []
 
