@@ -85,7 +85,6 @@ class CruiseNode(FlightPlanner):
         ### Trajectory generation setup ###
         self.mj = None
         self.traj = None
-        self.pathtime = 0
 
         # min jerk results
         self.target_min_jerk_spd = 0
@@ -187,18 +186,18 @@ class CruiseNode(FlightPlanner):
             return  # controller not initialized yet
 
         self.target_cruise_spd = self.cc.inner_current_ctrl(self.current_draw, self.drone_vel_mag)
-        
-        self.pathtime = self.mj.projection()
+
+        self.mj.pathtime = self.mj.projection()
         self.target_min_jerk_spd = self.mj.velocity_scale() * 1.1 * self.cc.typical_cruise_spd / self.mj.target_vel # 10% wiggle room for cruise controller
-        
+
         # allocator function
         self.target_spd = min(self.target_cruise_spd, self.target_min_jerk_spd)
-        
-        self.target_pos = list(self.traj.path(self.pathtime))
-        self.target_vel = list(self.traj.velocity(self.pathtime) * self.target_spd)
+
+        self.target_pos = list(self.traj.path(self.mj.pathtime))
+        self.target_vel = list(self.traj.velocity(self.mj.pathtime) * self.target_spd)
 
         # check for completion
-        if self.pathtime > self.mj.duration - self.mj.project_ahead:
+        if self.mj.pathtime > self.mj.duration - self.mj.project_ahead:
             print("Path completed")
             self.inner_timer.cancel()
             self.inner_timer = None
