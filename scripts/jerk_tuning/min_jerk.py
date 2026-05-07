@@ -16,12 +16,12 @@ from std_msgs.msg import Float32
 from px4_msgs.msg import VehicleStatus, VehicleLocalPosition, BatteryStatus, TrajectorySetpoint
 from rclpy.qos import QoSPresetProfiles
 
-hyperparameters = [
+parameters = [
     {}
 ]
 
 class MinJerkTraj(utils.BTNode):
-    def __init__(self, name, fp:FlightPlanner, traj:trajectory.Trajectory, target_vel:float, forecast_time:float):
+    def __init__(self, name, fp:FlightPlanner, traj:trajectory.Trajectory, target_vel:float, forecast_time:float, resolution:float=0.1, project_ahead:float=0.1):
         super().__init__(name)
         self.fp = fp
         self.traj = traj
@@ -33,14 +33,10 @@ class MinJerkTraj(utils.BTNode):
         self.T = forecast_time
         self.target_vel = target_vel
         self.horizon = self.T * self.target_vel
-        self.resolution = 0.5
-        self.project_ahead = 0.1
+        self.resolution = resolution
+        self.project_ahead = project_ahead
         self.constants = []
         self.powers = []
-
-        # slew rate limiter variables
-        self.last_target_velocity = 0
-        self.max_acceleration = 3.0      # m/s^2 
 
     def initialize(self):
         super().initialize()
@@ -49,7 +45,7 @@ class MinJerkTraj(utils.BTNode):
         while traj_iter.next != None:
             traj_iter = traj_iter.next
             self.duration += traj_iter.duration
-        
+
         self.constants = [
             3 * np.array([20/self.T, -8, -12]) / (2*self.T**2),
             4 * np.array([-30/self.T, 14, 16]) / (2*self.T**3),
@@ -63,9 +59,9 @@ class MinJerkTraj(utils.BTNode):
 
     def projection(self) -> bool:
         closest = self.pathtime
-        closest_dist = 1e6
+        closest_dist = float('inf')
         cur_pos = np.array([self.fp._position.x, self.fp._position.y, self.fp._position.z])
-        # binary search instead of linear intrerpol?
+        # binary search instead of linear interpol?
         for t in np.arange(max(self.pathtime - 5, 0), min(self.pathtime + 5, self.duration), 0.1):
             pos = self.traj.path(t)
             dist = np.linalg.norm(cur_pos - pos)
@@ -73,7 +69,6 @@ class MinJerkTraj(utils.BTNode):
                 closest_dist = dist
                 closest = t
         return closest + self.project_ahead
-
 
     def velocity_scale(self) -> float:
         """
@@ -96,10 +91,24 @@ class MinJerkTraj(utils.BTNode):
         sum_v_x = 0
         sum_v_y = 0
         for i, dt in enumerate(np.arange(-self.horizon + self.project_ahead, self.project_ahead, self.resolution)):
-            pos0 = self.traj.path(self.pathtime + dt)
-            pos1 = self.traj.path(self.pathtime + dt + self.horizon)
-            vel0 = self.traj.velocity(self.pathtime + dt)
-            vel1 = self.traj.velocity(self.pathtime + dt + self.horizon)
+            t0 = self.pathtime + dt
+            t1 = t0 + self.horizon
+            # smoothing start and end by treating as 180s
+            if t0 >= 0:
+                pos0 = self.traj.path(t0)
+                vel0 = self.traj.velocity(t0)
+            else:
+                pos0 = self.traj.path(-t0)
+                vel0 = -self.traj.velocity(-t0)
+
+            if t1 <= self.duration:
+                pos1 = self.traj.path(t1)
+                vel1 = self.traj.velocity(t1)
+            else:
+                t1 = self.duration + self.duration - t1
+                pos1 = self.traj.path(t1)
+                vel1 = -self.traj.velocity(t1)
+
 
             dpx = pos1[0] - pos0[0]
             vx0 = vel0[0]
@@ -113,24 +122,20 @@ class MinJerkTraj(utils.BTNode):
             sum_v_y += vy0 + np.dot(np.matmul(self.constants, [dpy, vy1, vy0]), self.powers[i])
         #return sum_v_x/len(self.powers), sum_v_y/len(self.powers)
         return (sum_v_x**2 + sum_v_y**2) ** 0.5 / len(self.powers)
-    
+
     def tick(self):
         # Action based, tries to clock as fast as btree
         # How to determine failure? built in time out?
         if self.pathtime > self.duration - self.project_ahead:
+            self.traj_sp.position = list(self.traj.path(self.duration))
+            self.traj_sp.velocity = [0.0, 0.0, 0.0]
+            self.fp._traj_publisher.publish(self.traj_sp)
             self.status = utils.STATUS.SUCCESS
             return self.status
 
         self.pathtime = self.projection()
         self.target_spd = self.velocity_scale()
-        print(self.target_spd)
-
-        '''# slew rate limiter to velocity output
-        max_delta = self.max_acceleration * self.inner_dt
-        requested_delta = self.target_velocity - self.last_target_velocity
-        clamped_delta = max(-max_delta, min(requested_delta, max_delta))
-        self.target_velocity = self.last_target_velocity + clamped_delta
-        self.last_target_velocity = self.target_velocity'''
+        print(f"{self.name} target speed: {self.target_spd}")
 
         self.traj_sp.position = list(self.traj.path(self.pathtime))
         self.traj_sp.velocity = list(self.traj.velocity(self.pathtime) * self.target_spd)
@@ -139,7 +144,6 @@ class MinJerkTraj(utils.BTNode):
         #self.traj_sp.velocity = [vx, vy, 0.0]
         self.fp._traj_publisher.publish(self.traj_sp)
         return self.status
-
 
 class BTreeFlightPlanner(FlightPlanner):
     def __init__(self):
@@ -179,11 +183,13 @@ class BTreeFlightPlanner(FlightPlanner):
                         fp=self
                     ),
                     MinJerkTraj(
-                        name="",
+                        name="min_jerk",
                         fp=self,
                         traj=self.traj,
                         target_vel=5,
-                        forecast_time=3
+                        forecast_time=3,
+                        resolution=0.1,
+                        project_ahead=0.1
                     )
                 ]
             )

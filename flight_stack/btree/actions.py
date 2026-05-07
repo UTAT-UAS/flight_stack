@@ -173,9 +173,9 @@ class Traj(BTNode):
 
     def projection(self) -> bool:
         closest = self.pathtime
-        closest_dist = 1e6
+        closest_dist = float('inf')
         cur_pos = np.array([self.fp._position.x, self.fp._position.y, self.fp._position.z])
-        # binary search instead of linear intrerpol?
+        # binary search instead of linear interpol?
         for t in np.arange(max(self.pathtime - 5, 0), min(self.pathtime + 5, self.duration), 0.1):
             pos = self.traj.path(t)
             dist = np.linalg.norm(cur_pos - pos)
@@ -208,70 +208,129 @@ class Traj(BTNode):
         return self.status
 
 
-class AutoCenter(BTNode):
-    """
-    Action + Decorator
-    """
-    def __init__(self, name, fp:FlightPlanner, child:BTNode, k=0.002, floor_tol=10, max_rate=0.1):
+class MinJerkTraj(BTNode):
+    def __init__(self, name, fp:FlightPlanner, traj:trajectory.Trajectory, target_vel:float, forecast_time:float, resolution:float=0.1, project_ahead:float=0.1):
         super().__init__(name)
         self.fp = fp
-        self.setpoint = VehicleAttitudeSetpoint()
-        self.k = k
-        self.floor_tol = floor_tol
-        self.max_rate = max_rate
-        self.child = child
+        self.traj = traj
+        self.pathtime = 0
+        self.duration = 0
+        self.traj_sp = TrajectorySetpoint()
 
-    def setup(self, blackboard:dict):
-        super().setup(blackboard)
-        if self.child:
-            self.child.setup(blackboard)
+        # parameters
+        self.T = forecast_time
+        self.target_vel = target_vel
+        self.horizon = self.T * self.target_vel
+        self.resolution = resolution
+        self.project_ahead = project_ahead
+        self.constants = []
+        self.powers = []
 
     def initialize(self):
         super().initialize()
-        if self.child:
-            self.child.initialize()
+        self.duration = self.traj.duration
+        traj_iter = self.traj
+        while traj_iter.next != None:
+            traj_iter = traj_iter.next
+            self.duration += traj_iter.duration
+
+        self.constants = [
+            3 * np.array([20/self.T, -8, -12]) / (2*self.T**2),
+            4 * np.array([-30/self.T, 14, 16]) / (2*self.T**3),
+            5 * np.array([12/self.T, -6, -6]) / (2*self.T**4),
+        ]
+        self.powers = [[(-x)**i for i in range(2, 5)] for x in np.arange(-self.T, 0, self.resolution/self.target_vel)]
 
     def reset(self):
-        if self.child:
-            self.child.reset()
         super().reset()
+        self.pathtime = 0
+
+    def projection(self) -> bool:
+        closest = self.pathtime
+        closest_dist = float('inf')
+        cur_pos = np.array([self.fp._position.x, self.fp._position.y, self.fp._position.z])
+        # binary search instead of linear interpol?
+        for t in np.arange(max(self.pathtime - 5, 0), min(self.pathtime + 5, self.duration), 0.1):
+            pos = self.traj.path(t)
+            dist = np.linalg.norm(cur_pos - pos)
+            if dist < closest_dist:
+                closest_dist = dist
+                closest = t
+        return closest + self.project_ahead
+
+
+    def velocity_scale(self) -> float:
+        """
+        Min Jerk Position interpolation polynomial:
+        c0 = p0
+        c1 = v0
+        c2 = 0.5 a0
+        c3 = (20(pf - p0) - T(8vf + 12v0) - T^2(3a0 - af)) / 2 T^3
+        c4 = (-30(pf - p0) - T(14vf + 16v0) + T^2(3a0 - 2af)) / 2 T^4
+        c5 = (12(pf - p0) - 6T(vf + v0) - T^2(a0 - af)) / 2 T^5
+
+        assumptions:
+        a = 0
+        trajectory has unit velocity
+
+        Returns:
+            float: 0 to target_vel (sometimes very slightly over)
+        """
+
+        sum_v_x = 0
+        sum_v_y = 0
+        for i, dt in enumerate(np.arange(-self.horizon + self.project_ahead, self.project_ahead, self.resolution)):
+            t0 = self.pathtime + dt
+            t1 = t0 + self.horizon
+            # smoothing start and end by treating as 180s
+            if t0 >= 0:
+                pos0 = self.traj.path(t0)
+                vel0 = self.traj.velocity(t0)
+            else:
+                pos0 = self.traj.path(-t0)
+                vel0 = -self.traj.velocity(-t0)
+
+            if t1 <= self.duration:
+                pos1 = self.traj.path(t1)
+                vel1 = self.traj.velocity(t1)
+            else:
+                t1 = self.duration + self.duration - t1
+                pos1 = self.traj.path(t1)
+                vel1 = -self.traj.velocity(t1)
+
+            dpx = pos1[0] - pos0[0]
+            vx0 = vel0[0]
+            vx1 = vel1[0]
+
+            dpy = pos1[1] - pos0[1]
+            vy0 = vel0[1]
+            vy1 = vel1[1]
+
+            sum_v_x += vx0 + np.dot(np.matmul(self.constants, [dpx, vx1, vx0]), self.powers[i])
+            sum_v_y += vy0 + np.dot(np.matmul(self.constants, [dpy, vy1, vy0]), self.powers[i])
+        #return sum_v_x/len(self.powers), sum_v_y/len(self.powers)
+        return (sum_v_x**2 + sum_v_y**2) ** 0.5 / len(self.powers)
 
     def tick(self):
-        # only works for GOTO mode
-        dx = self.blackboard["target_dx"]
-        if abs(dx) < self.floor_tol:
-            self.setpoint.yaw_sp_move_rate = 0.0
-        else:
-            self.setpoint.yaw_sp_move_rate = min(max(self.k * dx, -self.max_rate), self.max_rate)
-
-        # Publish a valid attitude setpoint for PX4.
-        # Predict the yaw 0.1s into the future using the commanded yaw rate.
-        q = [float(x) for x in self.fp._attitude.q]
-        q0, q1, q2, q3 = q
-        roll = math.atan2(2.0 * (q0 * q1 + q2 * q3), q0 * q0 - q1 * q1 - q2 * q2 + q3 * q3)
-        pitch = math.asin(2.0 * (q0 * q2 - q1 * q3))
-        yaw = math.atan2(2.0 * (q0 * q3 + q1 * q2), q0 * q0 + q1 * q1 - q2 * q2 - q3 * q3)
-        future_yaw = yaw + self.setpoint.yaw_sp_move_rate * 0.1
-        cy = math.cos(future_yaw * 0.5)
-        sy = math.sin(future_yaw * 0.5)
-        cp = math.cos(pitch * 0.5)
-        sp = math.sin(pitch * 0.5)
-        cr = math.cos(roll * 0.5)
-        sr = math.sin(roll * 0.5)
-        self.setpoint.q_d = [
-            cr * cp * cy + sr * sp * sy,
-            sr * cp * cy - cr * sp * sy,
-            cr * sp * cy + sr * cp * sy,
-            cr * cp * sy - sr * sp * cy,
-        ]
-        #self.setpoint.thrust_body = [None, None, None]
-        self.fp._attitude_publisher.publish(self.setpoint)
-
-        if self.child:
-            self.status = self.child.tick()
-        elif abs(dx) < self.floor_tol:
+        # Action based, tries to clock as fast as btree
+        # How to determine failure? built in time out?
+        if self.pathtime > self.duration - self.project_ahead:
+            self.traj_sp.position = list(self.traj.path(self.duration))
+            self.traj_sp.velocity = [0.0, 0.0, 0.0]
+            self.fp._traj_publisher.publish(self.traj_sp)
             self.status = STATUS.SUCCESS
+            return self.status
 
+        self.pathtime = self.projection()
+        self.target_spd = self.velocity_scale()
+        print("f{self.name} target speed: {self.target_spd}")
+
+        self.traj_sp.position = list(self.traj.path(self.pathtime))
+        self.traj_sp.velocity = list(self.traj.velocity(self.pathtime) * self.target_spd)
+        #vx, vy = self.velocity_scale()
+        #print(vx, vy)
+        #self.traj_sp.velocity = [vx, vy, 0.0]
+        self.fp._traj_publisher.publish(self.traj_sp)
         return self.status
 
 
