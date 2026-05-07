@@ -308,8 +308,8 @@ class MinJerkTraj(BTNode):
 
             sum_v_x += vx0 + np.dot(np.matmul(self.constants, [dpx, vx1, vx0]), self.powers[i])
             sum_v_y += vy0 + np.dot(np.matmul(self.constants, [dpy, vy1, vy0]), self.powers[i])
-        #return sum_v_x/len(self.powers), sum_v_y/len(self.powers)
-        return (sum_v_x**2 + sum_v_y**2) ** 0.5 / len(self.powers)
+        return sum_v_x/len(self.powers), sum_v_y/len(self.powers)
+        #return (sum_v_x**2 + sum_v_y**2) ** 0.5 / len(self.powers)
 
     def tick(self):
         # Action based, tries to clock as fast as btree
@@ -322,14 +322,14 @@ class MinJerkTraj(BTNode):
             return self.status
 
         self.pathtime = self.projection()
-        self.target_spd = self.velocity_scale()
-        print("f{self.name} target speed: {self.target_spd}")
+        #self.target_spd = self.velocity_scale()
+        #print(f"{self.name} target speed: {self.target_spd}")
 
         self.traj_sp.position = list(self.traj.path(self.pathtime))
-        self.traj_sp.velocity = list(self.traj.velocity(self.pathtime) * self.target_spd)
-        #vx, vy = self.velocity_scale()
-        #print(vx, vy)
-        #self.traj_sp.velocity = [vx, vy, 0.0]
+        #self.traj_sp.velocity = list(self.traj.velocity(self.pathtime) * self.target_spd)
+        vx, vy = self.velocity_scale()
+        print(f"{self.name} target vel: {vx}, {vy}")
+        self.traj_sp.velocity = [vx, vy, 0.0]
         self.fp._traj_publisher.publish(self.traj_sp)
         return self.status
 
@@ -354,6 +354,8 @@ class AutoCenterTraj(BTNode):
         # Hover
         self.goto.position = [self.fp._position.x, self.fp._position.y, self.fp._position.z]
         self.goto.velocity = [0.0, 0.0, 0.0]
+        self.goto.yaw = self.fp._position.heading
+        self.goto.yawspeed = 0
         if self.child:
             self.child.initialize()
 
@@ -366,7 +368,7 @@ class AutoCenterTraj(BTNode):
         dx = self.blackboard.get("target_dx")
         if dx is None:
             print("warning: target_dx not found in blackboard")
-            return self.status
+            dx = 0
         if abs(dx) < self.floor_tol:
             self.goto.yawspeed = 0.0
         else:
