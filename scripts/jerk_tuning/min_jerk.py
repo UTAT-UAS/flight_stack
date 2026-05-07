@@ -1,0 +1,242 @@
+#!/usr/bin/env python3
+import flight_stack
+print("Using flight_stack from:", flight_stack.__file__)
+import math
+import numpy as np
+import time
+
+import rclpy
+
+from flight_stack.flight_stack import FlightPlanner
+from flight_stack.pather import trajectory
+from flight_stack.btree import manager, controls, decorators, actions, utils
+
+from flight_stack_msgs.srv import CoreCommand
+from std_msgs.msg import Float32
+from px4_msgs.msg import VehicleStatus, VehicleLocalPosition, BatteryStatus, TrajectorySetpoint
+from rclpy.qos import QoSPresetProfiles
+
+hyperparameters = [
+    {}
+]
+
+class MinJerkTraj(utils.BTNode):
+    def __init__(self, name, fp:FlightPlanner, traj:trajectory.Trajectory, target_vel:float, params:dict):
+        super().__init__(name)
+        self.fp = fp
+        self.traj = traj
+        self.pathtime = 0
+        self.duration = 0
+        self.traj_sp = TrajectorySetpoint()
+
+        # parameters
+        self.T = 3
+        self.target_vel = target_vel
+        self.horizon = self.T * self.target_vel
+        self.resolution = 0.5
+        self.project_ahead = 0.1
+        self.constants = []
+        self.powers = []
+
+        # slew rate limiter variables
+        self.last_target_velocity = 0
+        self.max_acceleration = 3.0      # m/s^2 
+
+    def initialize(self):
+        super().initialize()
+        self.duration = self.traj.duration
+        traj_iter = self.traj
+        while traj_iter.next != None:
+            traj_iter = traj_iter.next
+            self.duration += traj_iter.duration
+        
+        self.constants = [
+            3 * np.array([20/self.T, -8, -12]) / (2*self.T**2),
+            4 * np.array([-30/self.T, 14, 16]) / (2*self.T**3),
+            5 * np.array([12/self.T, -6, -6]) / (2*self.T**4),
+        ]
+        self.powers = [[(-x)**i for i in range(2, 5)] for x in np.arange(-self.T, 0, self.resolution/self.target_vel)]
+
+    def reset(self):
+        super().reset()
+        self.pathtime = 0
+
+    def projection(self) -> bool:
+        closest = self.pathtime
+        closest_dist = 1e6
+        cur_pos = np.array([self.fp._position.x, self.fp._position.y, self.fp._position.z])
+        # binary search instead of linear intrerpol?
+        for t in np.arange(max(self.pathtime - 5, 0), min(self.pathtime + 5, self.duration), 0.1):
+            pos = self.traj.path(t)
+            dist = np.linalg.norm(cur_pos - pos)
+            if dist < closest_dist:
+                closest_dist = dist
+                closest = t
+        return closest + self.project_ahead
+
+
+    def velocity_scale(self) -> float:
+        """
+        Min Jerk Position interpolation polynomial:
+        c0 = p0
+        c1 = v0
+        c2 = 0.5 a0
+        c3 = (20(pf - p0) - T(8vf + 12v0) - T^2(3a0 - af)) / 2 T^3
+        c4 = (-30(pf - p0) - T(14vf + 16v0) + T^2(3a0 - 2af)) / 2 T^4
+        c5 = (12(pf - p0) - 6T(vf + v0) - T^2(a0 - af)) / 2 T^5
+
+        assumptions:
+        a = 0
+        trajectory has unit velocity
+
+        Returns:
+            float: 0 to target_vel (sometimes very slightly over)
+        """
+
+        sum_v_x = 0
+        sum_v_y = 0
+        for i, dt in enumerate(np.arange(-self.horizon + self.project_ahead, self.project_ahead, self.resolution)):
+            pos0 = self.traj.path(self.pathtime + dt)
+            pos1 = self.traj.path(self.pathtime + dt + self.horizon)
+            vel0 = self.traj.velocity(self.pathtime + dt)
+            vel1 = self.traj.velocity(self.pathtime + dt + self.horizon)
+
+            dpx = pos1[0] - pos0[0]
+            vx0 = vel0[0]
+            vx1 = vel1[0]
+
+            dpy = pos1[1] - pos0[1]
+            vy0 = vel0[1]
+            vy1 = vel1[1]
+
+            sum_v_x += vx0 + np.dot(np.matmul(self.constants, [dpx, vx1, vx0]), self.powers[i])
+            sum_v_y += vy0 + np.dot(np.matmul(self.constants, [dpy, vy1, vy0]), self.powers[i])
+        #return sum_v_x/len(self.powers), sum_v_y/len(self.powers)
+        return (sum_v_x**2 + sum_v_y**2) ** 0.5 / len(self.powers)
+    
+    def tick(self):
+        # Action based, tries to clock as fast as btree
+        # How to determine failure? built in time out?
+        if self.pathtime > self.duration - self.project_ahead:
+            self.status = utils.STATUS.SUCCESS
+            return self.status
+
+        self.pathtime = self.projection()
+        min_jerk_scale = self.velocity_scale()
+        print(min_jerk_scale)
+        self.min_jerk_velocity = min_jerk_scale
+        self.target_velocity = self.min_jerk_velocity
+
+        '''# slew rate limiter to velocity output
+        max_delta = self.max_acceleration * self.inner_dt
+        requested_delta = self.target_velocity - self.last_target_velocity
+        clamped_delta = max(-max_delta, min(requested_delta, max_delta))
+        self.target_velocity = self.last_target_velocity + clamped_delta
+        self.last_target_velocity = self.target_velocity'''
+
+        self.traj_sp.position = list(self.traj.path(self.pathtime))
+        self.traj_sp.velocity = list(self.traj.velocity(self.pathtime) * self.target_velocity)
+        #vx, vy = self.velocity_scale()
+        #print(vx, vy)
+        #self.traj_sp.velocity = [vx, vy, 0.0]
+        self.fp._traj_publisher.publish(self.traj_sp)
+        return self.status
+
+
+class BTreeFlightPlanner(FlightPlanner):
+    def __init__(self):
+        super().__init__()
+
+        # trajectory
+        self.traj = trajectory.Wrapper(trajectory.Custom(None, 0, np.array([]), 0))
+        self.duration = 0
+        # state vars
+        self.unitialized_traj = True
+        self.drone_vel_mag = 0.0
+        self.pathtime = 0
+        self.expected_cruise_velocity = 15  # initial guess of steady state cruise velocity
+        self.target_velocity = 0.0  # Output of inner loop (curvature slowdown factored)
+
+        # pubs
+        self.goto = TrajectorySetpoint()
+        self.goto.yaw = math.nan
+        self.goto.yawspeed = math.nan
+
+        # behavior tree assembly
+        self.btree = manager.BehaviorTree("cruise_control_and_curvature_test")
+        self.btree.setroot(
+            controls.Sequence(
+                name="root",
+                children=[
+                    decorators.Timeout(
+                        name="offboard_timeout",
+                        timeout=5,
+                        child=actions.SetOffboard(
+                            name="set_offboard",
+                            fp=self
+                        )
+                    ),
+                    actions.SetTrajMode(
+                        name="set_traj",
+                        fp=self
+                    ),
+                    MinJerkTraj(
+                        name="",
+                        fp=self,
+                        traj=self.traj,
+                        target_vel=5,
+                        params={}
+                    )
+                ]
+            )
+        )
+        self.btree.setup()
+        time.sleep(1)  # wait for setup to complete
+        self.btree.initialize()
+
+    def main_loop(self):
+        self.time = time.time()
+
+        if self.duration == 0:
+            x, y, z = self._position.x, self._position.y, -2.5#self._position.z
+            paths = [
+                trajectory.Line(np.array([x, y, z]), np.array([x, y + 10, z]), duration=10),
+                trajectory.Circle(np.array([x, y + 10, z]), np.array([x + 5, y + 10, z]), cycles=0.5, axis=np.array([0, 0, -1])),
+                trajectory.Circle(np.array([x + 10, y + 10, z]), np.array([x + 12, y + 10, z]), cycles=1),
+                trajectory.Line(np.array([x + 10, y + 10, z]), np.array([x + 10, y - 10, z]), duration=20),
+                trajectory.Line(np.array([x + 10, y - 10, z]), np.array([x + 15, y - 15, z]), duration=50**0.5),
+                trajectory.Line(np.array([x + 15, y - 15, z]), np.array([x + 30, y, z]), duration=450**0.5),
+                trajectory.Line(np.array([x + 30, y, z]), np.array([x, y, z]), duration=30),
+            ]
+            for i, traj in enumerate(paths[:-1]):
+                traj.next = paths[i + 1]
+                self.duration += traj.duration
+            self.duration += paths[-1].duration
+            self.traj.replace_child(paths[0])
+
+        self.btree.tick()
+        if self.btree.status == manager.STATUS.SUCCESS:
+            print("mission complete")
+            exit()
+        elif self.btree.status == manager.STATUS.FAILURE:
+            print("mission failed")
+            exit()
+
+
+def main(args=None):
+    rclpy.init(args=args)
+
+    btree_fp = BTreeFlightPlanner()
+
+    rclpy.spin(btree_fp)
+
+    # Destroy the node explicitly
+    # (optional - otherwise it will be done automatically
+    # when the garbage collector destroys the node object)
+    btree_fp.destroy_node()
+    rclpy.shutdown()
+
+
+if __name__ == "__main__":
+    main()
+
