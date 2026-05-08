@@ -217,14 +217,14 @@ class CruiseNode(FlightPlanner):
         self.target_cruise_spd = self.cc.inner_current_ctrl(self.current_draw, self.drone_vel_mag)
 
         self.mj.pathtime = self.mj.projection()
-        vx, vy = self.mj.velocity_scale()
+        vx, vy = self.mj.velocity()
         norm = (vx**2 + vy**2)**0.5
         self.target_min_jerk_spd = norm * 1.1 * self.cc.typical_cruise_spd / self.mj.target_vel # 10% wiggle room for cruise controller
 
         # allocator function
         self.target_spd = min(self.target_cruise_spd, self.target_min_jerk_spd)
 
-        self.target_pos = list(self.traj.path(self.mj.pathtime))
+        self.target_pos = list(self.mj.position())
         self.target_vel = [vx * self.target_spd / norm, vy * self.target_spd / norm, 0.0]
 
 

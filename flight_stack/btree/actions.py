@@ -216,6 +216,8 @@ class MinJerkTraj(BTNode):
         self.pathtime = 0
         self.duration = 0
         self.traj_sp = TrajectorySetpoint()
+        self.traj_sp.yaw = math.nan
+        self.traj_sp.yawspeed = math.nan
 
         # parameters
         self.T = forecast_time
@@ -256,10 +258,12 @@ class MinJerkTraj(BTNode):
             if dist < closest_dist:
                 closest_dist = dist
                 closest = t
-        return closest + self.project_ahead
+        return closest
 
+    def position(self) -> np.ndarray:
+        return self.traj.path(self.pathtime + self.project_ahead)
 
-    def velocity_scale(self) -> float:
+    def velocity(self) -> tuple[float, float]:
         """
         Min Jerk Position interpolation polynomial:
         c0 = p0
@@ -279,9 +283,9 @@ class MinJerkTraj(BTNode):
 
         sum_v_x = 0
         sum_v_y = 0
-        for i, dt in enumerate(np.arange(-self.horizon + self.project_ahead, self.project_ahead, self.resolution)):
-            t0 = self.pathtime + dt
-            t1 = t0 + self.horizon
+        for i, dt in enumerate(np.arange(self.project_ahead, self.horizon + self.project_ahead, self.resolution)):
+            t1 = self.pathtime + dt
+            t0 = t1 - self.horizon
             # smoothing start and end by treating as 180s
             if t0 >= 0:
                 pos0 = self.traj.path(t0)
@@ -327,7 +331,7 @@ class MinJerkTraj(BTNode):
 
         self.traj_sp.position = list(self.traj.path(self.pathtime))
         #self.traj_sp.velocity = list(self.traj.velocity(self.pathtime) * self.target_spd)
-        vx, vy = self.velocity_scale()
+        vx, vy = self.velocity()
         print(f"{self.name} target vel: {vx}, {vy}")
         self.traj_sp.velocity = [vx, vy, 0.0]
         self.fp._traj_publisher.publish(self.traj_sp)
