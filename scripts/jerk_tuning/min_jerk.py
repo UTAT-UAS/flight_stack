@@ -28,6 +28,8 @@ class MinJerkTraj(utils.BTNode):
         self.pathtime = 0
         self.duration = 0
         self.traj_sp = TrajectorySetpoint()
+        self.traj_sp.yaw = math.nan
+        self.traj_sp.yawspeed = math.nan
 
         # parameters
         self.T = forecast_time
@@ -70,7 +72,7 @@ class MinJerkTraj(utils.BTNode):
                 closest = t
         return closest + self.project_ahead
 
-    def velocity_scale(self) -> float:
+    def velocity_scale(self) -> tuple[float, float]:
         """
         Min Jerk Position interpolation polynomial:
         c0 = p0
@@ -141,14 +143,12 @@ class MinJerkTraj(utils.BTNode):
         vx, vy = self.velocity_scale()
         print(vx, vy, self.traj_sp.position)
         self.traj_sp.velocity = [vx, vy, 0.0]
-        self.traj_sp.yaw = math.nan
-        self.traj_sp.yawspeed = math.nan
 
         #print(f"{self.traj_sp.position}")
         self.fp._traj_publisher.publish(self.traj_sp)
         return self.status
 
-class BTreeFlightPlanner(FlightPlanner):
+class MinJerkTester(FlightPlanner):
     def __init__(self):
         super().__init__()
 
@@ -233,7 +233,7 @@ class BTreeFlightPlanner(FlightPlanner):
 def main(args=None):
     rclpy.init(args=args)
 
-    btree_fp = BTreeFlightPlanner()
+    btree_fp = MinJerkTester()
 
     rclpy.spin(btree_fp)
 
@@ -246,4 +246,3 @@ def main(args=None):
 
 if __name__ == "__main__":
     main()
-
