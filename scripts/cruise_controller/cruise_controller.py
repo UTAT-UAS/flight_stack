@@ -9,7 +9,7 @@ class CurrentController():
         # outer loop vars
         self.start_time = start_time
         self.initial_capacity_consumed = initial_capacity_consumed
-        self.target_current_draw = 30.0 # input of outer loop
+        self.target_current_draw = 28.0 # input of outer loop
         self.target_ah = 0.0
         self.discharged_ah_corrected = 0.0
         self.current_setpoint = self.target_current_draw   # Output of outer loop, defaults to 60A 
@@ -26,11 +26,11 @@ class CurrentController():
         self.stored_integral = 0.0
 
         self.kp_inner = 0.25
-        self.ki_inner = 0.1
+        self.ki_inner = 0.0
 
 
         self.last_target_speed = self.base_ff_speed
-        self.max_acceleration = 5.0      # m/s^2 
+        self.max_acceleration = 1.0      # m/s^2 
 
         # timers
         self.inner_dt = 0.01  # 100 Hz 
