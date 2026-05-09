@@ -430,12 +430,25 @@ class AdjustFromDetection(BTNode):
     def initialize(self):
         super().initialize()
         self.has_requested = False
+        self.goto_msg = None
+        self.target_pos = None
 
     def reset(self):
         super().reset()
         self.has_requested = False
+        self.goto_msg = None
+        self.target_pos = None
 
     def tick(self):
+        if self.has_requested:
+            self.fp._goto_publisher.publish(self.goto_msg)
+            dist_sq = (self.fp._position.x - self.target_pos[0])**2 + \
+                      (self.fp._position.y - self.target_pos[1])**2 + \
+                      (self.fp._position.z - self.target_pos[2])**2
+            if dist_sq < 1.0: # 1 meter squared tolerance
+                return STATUS.SUCCESS
+            return STATUS.RUNNING
+
         if self.blackboard is None or "target_pos" not in self.blackboard:
             return STATUS.RUNNING
         
@@ -452,9 +465,6 @@ class AdjustFromDetection(BTNode):
         # Ignore if any point is nan
         if any(math.isnan(p.x) for p in [p_c, p_tl, p_tr, p_br, p_bl]):
             return STATUS.RUNNING
-
-        if self.has_requested:
-            return STATUS.SUCCESS
 
         # Camera frame: x is right, y is down, z is forward
         xl = (p_tl.x + p_bl.x) / 2.0
@@ -513,11 +523,14 @@ class AdjustFromDetection(BTNode):
         goto_msg.heading = new_yaw
         goto_msg.flag_control_heading = True
 
+        self.goto_msg = goto_msg
+        self.target_pos = [new_N, new_E, new_D]
+
         self.fp._goto_publisher.publish(goto_msg)
         self.has_requested = True
         print(f"AdjustFromDetection: Moving to N={new_N:.2f}, E={new_E:.2f}, D={new_D:.2f}, Yaw={new_yaw:.2f}")
 
-        return STATUS.SUCCESS
+        return STATUS.RUNNING
 
 
 class MoveToTarget(BTNode):
@@ -533,12 +546,25 @@ class MoveToTarget(BTNode):
     def initialize(self):
         super().initialize()
         self.has_requested = False
+        self.goto_msg = None
+        self.target_pos = None
 
     def reset(self):
         super().reset()
         self.has_requested = False
+        self.goto_msg = None
+        self.target_pos = None
 
     def tick(self):
+        if self.has_requested:
+            self.fp._goto_publisher.publish(self.goto_msg)
+            dist_sq = (self.fp._position.x - self.target_pos[0])**2 + \
+                      (self.fp._position.y - self.target_pos[1])**2 + \
+                      (self.fp._position.z - self.target_pos[2])**2
+            if dist_sq < 1.0: # 1 meter squared tolerance
+                return STATUS.SUCCESS
+            return STATUS.RUNNING
+
         if self.blackboard is None or "target_pos" not in self.blackboard:
             return STATUS.RUNNING
         
@@ -551,9 +577,6 @@ class MoveToTarget(BTNode):
         # Ignore if the center point is nan
         if math.isnan(p_c.x) or math.isnan(p_c.z):
             return STATUS.RUNNING
-
-        if self.has_requested:
-            return STATUS.SUCCESS
 
         xc = p_c.x
         zc = p_c.z
@@ -588,11 +611,14 @@ class MoveToTarget(BTNode):
         goto_msg.heading = yaw
         goto_msg.flag_control_heading = True
 
+        self.goto_msg = goto_msg
+        self.target_pos = [new_N, new_E, new_D]
+
         self.fp._goto_publisher.publish(goto_msg)
         self.has_requested = True
         print(f"MoveToTarget: Moving to N={new_N:.2f}, E={new_E:.2f}, D={new_D:.2f}, Yaw={yaw:.2f} (Delta={delta_L:.2f}m)")
 
-        return STATUS.SUCCESS
+        return STATUS.RUNNING
 
 
 class ShootWhenCentered(BTNode):
