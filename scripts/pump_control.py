@@ -6,6 +6,7 @@ from std_msgs.msg import Int32
 from px4_msgs.msg import ActuatorServos, ManualControlSetpoint, VehicleCommand
 from std_srvs.srv import SetBool
 import time
+from pymavlink import mavutil
 
 
 class PumpControl(Node):
@@ -34,6 +35,8 @@ class PumpControl(Node):
         self.servo_sub = self.create_subscription(
             Int32, "/set_servo_angle", self.servo_callback, 10
         )
+
+        self.mav_conn = mavutil.mavlink_connection('udp:127.0.0.1:14540')
 
         # Publisher for VehicleCommand (DO_SET_ACTUATOR)
         self.vehicle_command_pub = self.create_publisher(
@@ -76,48 +79,36 @@ class PumpControl(Node):
         self.current_servo_val = angle / self.max_angle
 
     def toggle_peripheral_callback(self, request, response):
-        cmd1 = VehicleCommand()
-        cmd1.timestamp = int(self.get_clock().now().nanoseconds / 1000)
-        cmd1.command = VehicleCommand.VEHICLE_CMD_DO_SET_PARAMETER
-        cmd1.target_system = 1
-        cmd1.target_component = 1
-        cmd1.source_system = 1
-        cmd1.source_component = 1
-        cmd1.from_external = True
-
-        cmd2 = VehicleCommand()
-        cmd2.timestamp = cmd1.timestamp
-        cmd2.command = VehicleCommand.VEHICLE_CMD_DO_SET_PARAMETER
-        cmd2.target_system = 1
-        cmd2.target_component = 1
-        cmd2.source_system = 1
-        cmd2.source_component = 1
-        cmd2.from_external = True
-
         if request.data:
-            # Switch to Peripheral via Actuator Set
-            cmd1.param1 = 1134.0 # PWM_MAIN_FUNC1 index
-            cmd1.param2 = 301.0 # Peripheral via Actuator Set 1
-            
-            cmd2.param1 = 1136.0 # PWM_MAIN_FUNC3 index
-            cmd2.param2 = 302.0 # Peripheral via Actuator Set 2
-            
             self.get_logger().info("Toggling PWM_MAIN_FUNC1 to 301 and PWM_MAIN_FUNC3 to 302.")
-            self.vehicle_command_pub.publish(cmd1)
-            self.vehicle_command_pub.publish(cmd2)
+            self.mav_conn.mav.param_set_send(
+                1, 1,
+                b'PWM_MAIN_FUNC1',
+                301.0,
+                mavutil.mavlink.MAV_PARAM_TYPE_INT32
+            )
+            self.mav_conn.mav.param_set_send(
+                1, 1,
+                b'PWM_MAIN_FUNC3',
+                302.0,
+                mavutil.mavlink.MAV_PARAM_TYPE_INT32
+            )
             response.success = True
             response.message = "Enabled peripheral (Actuator) mode"
         else:
-            # Switch back to RC AUX
-            cmd1.param1 = 1134.0 # PWM_MAIN_FUNC1 index
-            cmd1.param2 = 409.0 # RC AUX 3
-            
-            cmd2.param1 = 1136.0 # PWM_MAIN_FUNC3 index
-            cmd2.param2 = 410.0 # RC AUX 4
-            
             self.get_logger().info("Toggling PWM_MAIN_FUNC1 to 409 and PWM_MAIN_FUNC3 to 410.")
-            self.vehicle_command_pub.publish(cmd1)
-            self.vehicle_command_pub.publish(cmd2)
+            self.mav_conn.mav.param_set_send(
+                1, 1,
+                b'PWM_MAIN_FUNC1',
+                409.0,
+                mavutil.mavlink.MAV_PARAM_TYPE_INT32
+            )
+            self.mav_conn.mav.param_set_send(
+                1, 1,
+                b'PWM_MAIN_FUNC3',
+                410.0,
+                mavutil.mavlink.MAV_PARAM_TYPE_INT32
+            )
             response.success = True
             response.message = "Enabled RC AUX mode"
 
