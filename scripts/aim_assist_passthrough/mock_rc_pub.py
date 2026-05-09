@@ -12,7 +12,7 @@ class MockRcChannelsPub(Node):
         self.axes_vars = axes_vars
         
         # Publish to the EXACT same topic the rc_publisher is listening to
-        self.publisher_ = self.create_publisher(RcChannels, '/fmu/out/rc_channels', QoSPresetProfiles.SYSTEM_DEFAULT.value)
+        self.publisher_ = self.create_publisher(RcChannels, '/fmu/out/rc_channells', QoSPresetProfiles.SYSTEM_DEFAULT.value)
         
         # Publish at 20 Hz
         timer_period = 0.05

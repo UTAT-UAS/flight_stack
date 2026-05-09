@@ -1,6 +1,10 @@
 # feeds the rc topics from the flight controller to the flight controller through mavlink
 # this allows us to modify the rc inputs yaw channel in flight while still having full position mode without emulation
 
+import math
+
+from std_msgs.msg import Float32
+
 import rclpy
 from rclpy.node import Node
 from pymavlink import mavutil
@@ -27,28 +31,70 @@ class RcPassthroughNode(Node):
             self.rc_callback,
             QoSPresetProfiles.SENSOR_DATA.value
         )
+
+        self.xerror_subscriber = self.create_subscription(
+            Float32,
+            "/uas/cv/x_error",
+            self.x_error_cb,
+            QoSPresetProfiles.SENSOR_DATA.value,
+        )
             
-        self.yaw_channel_idx = 3 # Channel 4 (0-indexed in Python array) is usually Yaw
-        self.override_pwm = 30 # The value you want to inject
+
+        # controller
+        self.dx = 0.0
+        self.k = 0.0005
+        self.max_rate = 8 * math.pi/180
+        self.max_px4_rate = 45 * math.pi/180
+        self.max_pwm = int((self.max_rate / self.max_px4_rate) * 500) + 55
+
+        # override params
+        self.yaw_channel_idx = 3 # yaw channel (3)
+        self.yaw_rate_target = 0.0
+        self.override_pwm = 0
 
     def rc_callback(self, msg):
+        # update yaw controller
+        self.yaw_controller()
+
+        # map yaw rate target to pwm channels (full scale is 45 dps for 1500-2000 us)
+        # -ve yaw left, +ve yaw right
+
+        # scale to max_px4_rate and then to PWM range
+
+        if msg.channels[4] > 0:
+            self.override_pwm = int(((self.yaw_rate_target / self.max_px4_rate) * 500) + 55 * math.copysign(1, self.yaw_rate_target)) # add a small offset to overcome deadzone
+            self.override_pwm = max(min(self.override_pwm, self.max_pwm), -self.max_pwm)
+        else: 
+            self.override_pwm = 0
+        
         rc_values = [65535] * 18
         
         # msg.channels contains the live RC inputs (scaled -1.0 to 1.0)
-        # We need to map them back to PWM equivalents (1000 to 2000 us) to forward correctly
+        # map to PWM equivalents (1000 to 2000 us) to forward correctly
         for i, val in enumerate(msg.channels):
             if i < 18:
                 rc_values[i] = int((val + 1.0) * 500 + 1000)
                 
-        # Override just the specific channel we want to control
+        # override yaw
         rc_values[self.yaw_channel_idx] = rc_values[self.yaw_channel_idx] + self.override_pwm
+        print(f"yaw_rate_input: {rc_values[self.yaw_channel_idx]} | override: {self.override_pwm}) | target: {self.yaw_rate_target * 180/math.pi:.2f} dps")
         
-        # Send the modified package of RC channels back to PX4 as an override
+        # send RC override mavlink message
         self.master.mav.rc_channels_override_send(
             self.master.target_system,
             self.master.target_component,
             *rc_values
         )
+
+    def x_error_cb(self, msg):
+        self.dx = msg.data
+
+    def yaw_controller(self):
+        if self.dx is None:
+            print("warning: target_dx not found in blackboard")
+            self.yaw_rate_target = 0.0
+        else:
+            self.yaw_rate_target = min(max(self.k * self.dx, -self.max_rate), self.max_rate)
         
 
 def main(args=None):
