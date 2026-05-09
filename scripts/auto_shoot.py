@@ -39,7 +39,7 @@ class BTreeFlightPlanner(FlightPlanner):
             QoSPresetProfiles.SENSOR_DATA.value,
         )
 
-        self.btree = manager.BehaviorTree("square_tree")
+        self.btree = manager.BehaviorTree("auto_shoot_tree")
         self.btree.setroot(
             controls.Sequence(
                 name="root",
@@ -53,10 +53,11 @@ class BTreeFlightPlanner(FlightPlanner):
                             actions.MoveToTarget(name="move_to_target", fp=self)
                         ],
                     ),
+                    actions.SetTrajMode(name="set_traj", fp=self),
                     actions.AutoCenterTraj(
                         name="auto_center",
                         fp=self,
-                        child=utils.BTNode("indefinite"),
+                        child=actions.ShootWhenCentered(name="shoot", fp=self, threshold=10.0, wait_time=3.0, pump_time=2000),
                         k=0.0005,
                         floor_tol=10,
                         max_rate=0.2,

@@ -8,6 +8,7 @@ from flight_stack.pather import trajectory
 
 from flight_stack_msgs.srv import CoreCommand
 from px4_msgs.msg import GotoSetpoint, VehicleStatus, TrajectorySetpoint, VehicleAttitudeSetpoint
+from std_msgs.msg import Int32
 
 from .utils import BTNode, STATUS
 
@@ -592,3 +593,41 @@ class MoveToTarget(BTNode):
         print(f"MoveToTarget: Moving to N={new_N:.2f}, E={new_E:.2f}, D={new_D:.2f}, Yaw={yaw:.2f} (Delta={delta_L:.2f}m)")
 
         return STATUS.SUCCESS
+
+
+class ShootWhenCentered(BTNode):
+    def __init__(self, name, fp:FlightPlanner, threshold=10.0, wait_time=3.0, pump_time=2000):
+        super().__init__(name)
+        self.fp = fp
+        self.threshold = threshold
+        self.wait_time = wait_time
+        self.pump_time = pump_time
+        self.centered_start_time = None
+        self.pump_publisher = self.fp.create_publisher(Int32, "/set_pump_time", 10)
+
+    def initialize(self):
+        super().initialize()
+        self.centered_start_time = None
+
+    def reset(self):
+        super().reset()
+        self.centered_start_time = None
+
+    def tick(self):
+        dx = self.blackboard.get("target_dx")
+        if dx is None:
+            return STATUS.RUNNING
+
+        if abs(dx) < self.threshold:
+            if self.centered_start_time is None:
+                self.centered_start_time = time.time()
+            elif time.time() - self.centered_start_time >= self.wait_time:
+                print(f"Centered for {self.wait_time}s. Shooting!")
+                msg = Int32()
+                msg.data = int(self.pump_time)
+                self.pump_publisher.publish(msg)
+                self.status = STATUS.SUCCESS
+        else:
+            self.centered_start_time = None
+
+        return self.status
