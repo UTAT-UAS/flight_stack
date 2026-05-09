@@ -37,6 +37,9 @@ class PumpControl(Node):
         )
 
         self.mav_conn = mavutil.mavlink_connection('udp:127.0.0.1:14540')
+        print("waiting heartbeat")
+        self.mav_conn.wait_heartbeat()
+        print(f"Heartbeat from system {self.mav_conn.target_system} component {self.mav_conn.target_component}")
 
         # Publisher for VehicleCommand (DO_SET_ACTUATOR)
         self.vehicle_command_pub = self.create_publisher(
@@ -82,15 +85,15 @@ class PumpControl(Node):
         if request.data:
             self.get_logger().info("Toggling PWM_MAIN_FUNC1 to 301 and PWM_MAIN_FUNC3 to 302.")
             self.mav_conn.mav.param_set_send(
-                1, 1,
+                self.mav_conn.target_system, self.mav_conn.target_component,
                 b'PWM_MAIN_FUNC1',
-                301.0,
+                301,
                 mavutil.mavlink.MAV_PARAM_TYPE_INT32
             )
             self.mav_conn.mav.param_set_send(
-                1, 1,
+                self.mav_conn.target_system, self.mav_conn.target_component,
                 b'PWM_MAIN_FUNC3',
-                302.0,
+                302,
                 mavutil.mavlink.MAV_PARAM_TYPE_INT32
             )
             response.success = True
@@ -98,15 +101,15 @@ class PumpControl(Node):
         else:
             self.get_logger().info("Toggling PWM_MAIN_FUNC1 to 409 and PWM_MAIN_FUNC3 to 410.")
             self.mav_conn.mav.param_set_send(
-                1, 1,
+                self.mav_conn.target_system, self.mav_conn.target_component,
                 b'PWM_MAIN_FUNC1',
-                409.0,
+                409,
                 mavutil.mavlink.MAV_PARAM_TYPE_INT32
             )
             self.mav_conn.mav.param_set_send(
-                1, 1,
+                self.mav_conn.target_system, self.mav_conn.target_component,
                 b'PWM_MAIN_FUNC3',
-                410.0,
+                410,
                 mavutil.mavlink.MAV_PARAM_TYPE_INT32
             )
             response.success = True
