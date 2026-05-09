@@ -23,6 +23,18 @@ class SetOffboard(BTNode):
             command.request.command = 2
             self.fp._core_command_client.call_async(command)
         else: self.status = STATUS.SUCCESS
+
+
+class AwaitOffboard(BTNode):
+    def __init__(self, name, fp:FlightPlanner):
+        super().__init__(name)
+        self.fp = fp
+
+    def tick(self):
+        print("awaiting offboard")
+        if self.fp._status.nav_state != VehicleStatus.NAVIGATION_STATE_OFFBOARD:
+            return self.status
+        self.status = STATUS.SUCCESS
         return self.status
 
 
@@ -32,6 +44,13 @@ class SetGotoMode(BTNode):
         self.fp = fp
 
     def tick(self):
+        # send current position as goto setpoint before switch to goto mode (otherwise might have large jump)
+        goto = GotoSetpoint()
+        goto.position = [self.fp._position.x, self.fp._position.y, self.fp._position.z]
+        goto.flag_control_heading = False
+        self.fp._goto_publisher.publish(goto) # publish multiple times to ensure received before mode switch
+        self.fp._goto_publisher.publish(goto)
+        self.fp._goto_publisher.publish(goto)
         print("CoreMode -> GOTO request sent")
         command = CoreCommand.Request()
         command.request.command = 6 # CORE_GOTO request command
@@ -46,6 +65,15 @@ class SetTrajMode(BTNode):
         self.fp = fp
 
     def tick(self):
+        # send current position as traj setpoint to switch to traj mode (otherwise might have large jump)
+        traj = TrajectorySetpoint()
+        traj.position = [self.fp._position.x, self.fp._position.y, self.fp._position.z]
+        traj.velocity = [0.0, 0.0, 0.0]
+        traj.yaw = self.fp._position.heading
+        traj.yawspeed = 0.0
+        self.fp._traj_publisher.publish(traj) # publish multiple times to ensure received before mode switch
+        self.fp._traj_publisher.publish(traj)
+        self.fp._traj_publisher.publish(traj)
         print("CoreMode -> TRAJ request sent")
         command = CoreCommand.Request()
         command.request.command = 7 # CORE_TRAJ request command
@@ -388,3 +416,179 @@ class AutoCenterTraj(BTNode):
             self.status = STATUS.SUCCESS
 
         return self.status
+
+class AdjustFromDetection(BTNode):
+    def __init__(self, name, fp:FlightPlanner):
+        super().__init__(name)
+        self.fp = fp
+        self.has_requested = False
+
+    def setup(self, blackboard:dict):
+        super().setup(blackboard)
+
+    def initialize(self):
+        super().initialize()
+        self.has_requested = False
+
+    def reset(self):
+        super().reset()
+        self.has_requested = False
+
+    def tick(self):
+        if self.blackboard is None or "target_pos" not in self.blackboard:
+            return STATUS.RUNNING
+        
+        polygon = self.blackboard.get("target_pos")
+        if len(polygon.points) < 5:
+            return STATUS.RUNNING
+
+        p_c = polygon.points[0]
+        p_tl = polygon.points[1]
+        p_tr = polygon.points[2]
+        p_br = polygon.points[3]
+        p_bl = polygon.points[4]
+
+        # Ignore if any point is nan
+        if any(math.isnan(p.x) for p in [p_c, p_tl, p_tr, p_br, p_bl]):
+            return STATUS.RUNNING
+
+        if self.has_requested:
+            return STATUS.SUCCESS
+
+        # Camera frame: x is right, y is down, z is forward
+        xl = (p_tl.x + p_bl.x) / 2.0
+        zl = (p_tl.z + p_bl.z) / 2.0
+        
+        xr = (p_tr.x + p_br.x) / 2.0
+        zr = (p_tr.z + p_br.z) / 2.0
+
+        xc = p_c.x
+        zc = p_c.z
+
+        dx = xr - xl
+        dz = zr - zl
+
+        # Normal towards camera
+        # If wall is facing camera, (dz, -dx) points to camera
+        n_x = dz
+        n_z = -dx
+        norm = math.hypot(n_x, n_z)
+        if norm < 1e-3:
+            return STATUS.SUCCESS
+        n_x /= norm
+        n_z /= norm
+
+        L = math.hypot(xc, zc)
+        if L < 1e-3: # too close
+            return STATUS.SUCCESS
+
+        P_cam_x = xc + L * n_x
+        P_cam_z = zc + L * n_z
+
+        delta_cam_x = P_cam_x
+        delta_cam_z = P_cam_z
+
+        # View vector from new position to center
+        V_x = xc - P_cam_x
+        V_z = zc - P_cam_z
+        delta_yaw = math.atan2(V_x, V_z)
+
+        # Transform to NED
+        yaw = self.fp._position.heading
+        
+        delta_N = delta_cam_z * math.cos(yaw) - delta_cam_x * math.sin(yaw)
+        delta_E = delta_cam_z * math.sin(yaw) + delta_cam_x * math.cos(yaw)
+
+        new_N = float(self.fp._position.x + delta_N)
+        new_E = float(self.fp._position.y + delta_E)
+        new_D = float(self.fp._position.z) # Keep same altitude
+        
+        new_yaw = float(yaw + delta_yaw)
+        # Normalize yaw to [-pi, pi]
+        new_yaw = (new_yaw + math.pi) % (2.0 * math.pi) - math.pi
+
+        goto_msg = GotoSetpoint()
+        goto_msg.position = [new_N, new_E, new_D]
+        goto_msg.heading = new_yaw
+        goto_msg.flag_control_heading = True
+
+        self.fp._goto_publisher.publish(goto_msg)
+        self.has_requested = True
+        print(f"AdjustFromDetection: Moving to N={new_N:.2f}, E={new_E:.2f}, D={new_D:.2f}, Yaw={new_yaw:.2f}")
+
+        return STATUS.SUCCESS
+
+
+class MoveToTarget(BTNode):
+    def __init__(self, name, fp:FlightPlanner, target_dist=1.5):
+        super().__init__(name)
+        self.fp = fp
+        self.target_dist = target_dist
+        self.has_requested = False
+
+    def setup(self, blackboard:dict):
+        super().setup(blackboard)
+
+    def initialize(self):
+        super().initialize()
+        self.has_requested = False
+
+    def reset(self):
+        super().reset()
+        self.has_requested = False
+
+    def tick(self):
+        if self.blackboard is None or "target_pos" not in self.blackboard:
+            return STATUS.RUNNING
+        
+        polygon = self.blackboard.get("target_pos")
+        if len(polygon.points) == 0:
+            return STATUS.RUNNING
+
+        p_c = polygon.points[0]
+
+        # Ignore if the center point is nan
+        if math.isnan(p_c.x) or math.isnan(p_c.z):
+            return STATUS.RUNNING
+
+        if self.has_requested:
+            return STATUS.SUCCESS
+
+        xc = p_c.x
+        zc = p_c.z
+
+        # Current horizontal distance to target
+        L = math.hypot(xc, zc)
+        if L < 1e-3:
+            return STATUS.SUCCESS
+
+        # How much distance we need to cover to be exactly target_dist away
+        delta_L = L - self.target_dist
+
+        # Direction to the target in the camera frame
+        dir_x = xc / L
+        dir_z = zc / L
+
+        delta_cam_x = delta_L * dir_x
+        delta_cam_z = delta_L * dir_z
+
+        # Transform to NED
+        yaw = self.fp._position.heading
+        
+        delta_N = delta_cam_z * math.cos(yaw) - delta_cam_x * math.sin(yaw)
+        delta_E = delta_cam_z * math.sin(yaw) + delta_cam_x * math.cos(yaw)
+
+        new_N = float(self.fp._position.x + delta_N)
+        new_E = float(self.fp._position.y + delta_E)
+        new_D = float(self.fp._position.z) # Keep same altitude
+
+        goto_msg = GotoSetpoint()
+        goto_msg.position = [new_N, new_E, new_D]
+        goto_msg.heading = yaw
+        goto_msg.flag_control_heading = True
+
+        self.fp._goto_publisher.publish(goto_msg)
+        self.has_requested = True
+        print(f"MoveToTarget: Moving to N={new_N:.2f}, E={new_E:.2f}, D={new_D:.2f}, Yaw={yaw:.2f} (Delta={delta_L:.2f}m)")
+
+        return STATUS.SUCCESS
