@@ -49,6 +49,7 @@ install(PROGRAMS
   scripts/landing_pad.py
   scripts/pump_control.py
   scripts/auto_shoot.py
+  scripts/offboard_testing_pub.py
   DESTINATION lib/${PROJECT_NAME}
 )
 
