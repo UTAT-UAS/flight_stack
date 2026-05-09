@@ -6,6 +6,7 @@ from std_msgs.msg import Int32
 from px4_msgs.msg import ActuatorServos, ManualControlSetpoint, VehicleCommand
 from std_srvs.srv import SetBool
 import time
+import struct
 from pymavlink import mavutil
 
 
@@ -87,13 +88,13 @@ class PumpControl(Node):
             self.mav_conn.mav.param_set_send(
                 self.mav_conn.target_system, self.mav_conn.target_component,
                 b'PWM_MAIN_FUNC1',
-                301,
+                struct.unpack('<f', struct.pack('<i', 301))[0],
                 mavutil.mavlink.MAV_PARAM_TYPE_INT32
             )
             self.mav_conn.mav.param_set_send(
                 self.mav_conn.target_system, self.mav_conn.target_component,
                 b'PWM_MAIN_FUNC3',
-                302,
+                struct.unpack('<f', struct.pack('<i', 302))[0],
                 mavutil.mavlink.MAV_PARAM_TYPE_INT32
             )
             response.success = True
@@ -103,13 +104,13 @@ class PumpControl(Node):
             self.mav_conn.mav.param_set_send(
                 self.mav_conn.target_system, self.mav_conn.target_component,
                 b'PWM_MAIN_FUNC1',
-                409,
+                struct.unpack('<f', struct.pack('<i', 409))[0],
                 mavutil.mavlink.MAV_PARAM_TYPE_INT32
             )
             self.mav_conn.mav.param_set_send(
                 self.mav_conn.target_system, self.mav_conn.target_component,
                 b'PWM_MAIN_FUNC3',
-                410,
+                struct.unpack('<f', struct.pack('<i', 410))[0],
                 mavutil.mavlink.MAV_PARAM_TYPE_INT32
             )
             response.success = True
