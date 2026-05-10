@@ -4,6 +4,7 @@ print("Using flight_stack from:", flight_stack.__file__)
 import math
 import numpy as np
 import time
+import datetime
 
 import rclpy
 
@@ -16,9 +17,11 @@ from std_msgs.msg import Float32
 from px4_msgs.msg import VehicleStatus, VehicleLocalPosition, BatteryStatus, TrajectorySetpoint
 from rclpy.qos import QoSPresetProfiles
 
-parameters = [
-    {}
-]
+data = [["pathtime", "mj_vx", "mj_vy", "cc_tgt", "px", "py", "pz", "vx", "vy", "vz", "ax", "ay", "az"]]
+logfile = "logs/log-" + datetime.datetime.now().isoformat() + ".csv"
+with open(logfile, 'w') as f:
+    f.writelines(','.join(row)+'\n' for row in data)
+data = []
 
 class MinJerkTraj(utils.BTNode):
     def __init__(self, name, fp:FlightPlanner, traj:trajectory.Trajectory, target_vel:float, forecast_time:float, resolution:float=0.1, project_ahead:float=0.1):
@@ -30,6 +33,10 @@ class MinJerkTraj(utils.BTNode):
         self.traj_sp = TrajectorySetpoint()
         self.traj_sp.yaw = math.nan
         self.traj_sp.yawspeed = math.nan
+
+        # restrict path jumping
+        self.leg = 0
+        self.subdurations = []
 
         # parameters
         self.T = forecast_time
@@ -43,10 +50,13 @@ class MinJerkTraj(utils.BTNode):
     def initialize(self):
         super().initialize()
         self.duration = self.traj.duration
+        self.subdurations = [0, self.traj.duration]
         traj_iter = self.traj
         while traj_iter.next != None:
             traj_iter = traj_iter.next
             self.duration += traj_iter.duration
+            self.subdurations.append(self.subdurations[-1] + traj_iter.duration)
+        self.subdurations.append(self.subdurations[-1] + 1)
 
         self.constants = [
             3 * np.array([20/self.T, -8, -12]) / (2*self.T**2),
@@ -58,21 +68,29 @@ class MinJerkTraj(utils.BTNode):
     def reset(self):
         super().reset()
         self.pathtime = 0
+        self.leg = 0
 
     def projection(self) -> bool:
+        resolution = 0.1
+        if self.pathtime >= self.subdurations[self.leg + 1] - resolution + 0.001: # accumulated floating point error
+            self.leg += 1
+
         closest = self.pathtime
         closest_dist = float('inf')
         cur_pos = np.array([self.fp._position.x, self.fp._position.y, self.fp._position.z])
         # binary search instead of linear interpol?
-        for t in np.arange(max(self.pathtime - 5, 0), min(self.pathtime + 5, self.duration), 0.1):
+        for t in np.arange(max(self.pathtime - 5, self.subdurations[self.leg]), min(self.pathtime + 5, self.subdurations[self.leg + 1] + resolution / 2, self.duration), resolution):
             pos = self.traj.path(t)
             dist = np.linalg.norm(cur_pos - pos)
-            if dist < closest_dist:
+            if dist <= closest_dist:
                 closest_dist = dist
                 closest = t
-        return closest + self.project_ahead
+        return closest
 
-    def velocity_scale(self) -> tuple[float, float]:
+    def position(self) -> np.ndarray:
+        return list(self.traj.path(self.pathtime + self.project_ahead))
+
+    def velocity(self) -> tuple[float, float]:
         """
         Min Jerk Position interpolation polynomial:
         c0 = p0
@@ -92,9 +110,9 @@ class MinJerkTraj(utils.BTNode):
 
         sum_v_x = 0
         sum_v_y = 0
-        for i, dt in enumerate(np.arange(-self.horizon + self.project_ahead, self.project_ahead, self.resolution)):
-            t0 = self.pathtime + dt
-            t1 = t0 + self.horizon
+        for i, dt in enumerate(np.arange(self.project_ahead, self.horizon + self.project_ahead, self.resolution)):
+            t1 = self.pathtime + dt
+            t0 = t1 - self.horizon
             # smoothing start and end by treating as 180s
             if t0 >= 0:
                 pos0 = self.traj.path(t0)
@@ -135,17 +153,16 @@ class MinJerkTraj(utils.BTNode):
             return self.status
 
         self.pathtime = self.projection()
-        #self.target_spd = self.velocity_scale()
-        #print(f"{self.name} target speed: {self.target_spd}")
+        current_spd = (self.fp._position.vx**2 + self.fp._position.vy**2) ** 0.5
+        self.project_ahead = 0.025 + 0.475 * current_spd / self.target_vel
 
-        self.traj_sp.position = list(self.traj.path(self.pathtime))
+        self.traj_sp.position = self.position()
         #self.traj_sp.velocity = list(self.traj.velocity(self.pathtime) * self.target_spd)
-        vx, vy = self.velocity_scale()
-        print(vx, vy, self.traj_sp.position)
+        vx, vy = self.velocity()
+        print(f"{self.name} - Pathtime: {self.pathtime}, Velocity: {vx}, {vy}")
         self.traj_sp.velocity = [vx, vy, 0.0]
-
-        #print(f"{self.traj_sp.position}")
         self.fp._traj_publisher.publish(self.traj_sp)
+
         return self.status
 
 class MinJerkTester(FlightPlanner):
@@ -164,24 +181,7 @@ class MinJerkTester(FlightPlanner):
         self.goto.yawspeed = math.nan
 
         # behavior tree assembly
-        self.btree = manager.BehaviorTree("cruise_control_and_curvature_test")
-        self.btree.setroot(
-            controls.Sequence(
-                name="root",
-                children=[
-                    decorators.Timeout(
-                        name="offboard_timeout",
-                        timeout=5,
-                        child=actions.SetOffboard(
-                            name="set_offboard",
-                            fp=self
-                        )
-                    ),
-                    actions.SetTrajMode(
-                        name="set_traj",
-                        fp=self
-                    ),
-                    MinJerkTraj(
+        self.mj = MinJerkTraj(
                         name="min_jerk",
                         fp=self,
                         traj=self.traj,
@@ -190,12 +190,47 @@ class MinJerkTester(FlightPlanner):
                         resolution=0.1,
                         project_ahead=0.1
                     )
+        self.btree = manager.BehaviorTree("min_jerk_trajectory_test")
+        self.btree.setroot(
+            controls.Sequence(
+                name="root",
+                children=[
+                    decorators.RemapStatus(
+                        name="always_succeed_offboard",
+                        child=decorators.Timeout(
+                            name="offboard_timeout",
+                            timeout=5,
+                            child=actions.SetOffboard(
+                                name="set_offboard",
+                                fp=self
+                            )
+                        ),
+                        remap={utils.STATUS.FAILURE: utils.STATUS.SUCCESS}
+                    ),
+                    actions.SetTrajMode(
+                        name="set_traj",
+                        fp=self
+                    ),
+                    self.mj
                 ]
             )
         )
         self.btree.setup()
         time.sleep(1)  # wait for setup to complete
         self.btree.initialize()
+
+        self._local_pos_subscriber = self.create_subscription(
+            VehicleLocalPosition,
+            "/fmu/out/vehicle_local_position",
+            self._local_pos_cb,
+            QoSPresetProfiles.SENSOR_DATA.value,
+        )
+
+    def _local_pos_cb(self, msg: VehicleLocalPosition) -> None:
+        # calculate velocity magnitude from xy vectors
+        self.drone_vel_mag = math.sqrt(msg.vx**2 + msg.vy**2)
+        if self.mj.status != utils.STATUS.RUNNING: return
+        data.append([self.mj.pathtime, self.mj.traj_sp.velocity[0], self.mj.traj_sp.velocity[1], 0, msg.x, msg.y, msg.z, msg.vx, msg.vy, msg.vz, msg.ax, msg.ay, msg.az])
 
     def main_loop(self):
         self.time = time.time()
@@ -222,6 +257,7 @@ class MinJerkTester(FlightPlanner):
             self.traj.replace_child(paths[0])
 
         self.btree.tick()
+        self.flush_data()
         if self.btree.status == manager.STATUS.SUCCESS:
             print("mission complete")
             exit()
@@ -229,6 +265,10 @@ class MinJerkTester(FlightPlanner):
             print("mission failed")
             exit()
 
+    def flush_data(self):
+        with open(logfile, 'a') as f:
+            f.writelines(','.join([str(x) for x in row])+'\n' for row in data)
+        data.clear()
 
 def main(args=None):
     rclpy.init(args=args)

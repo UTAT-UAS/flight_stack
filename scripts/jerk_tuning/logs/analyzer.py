@@ -1,7 +1,7 @@
 import matplotlib.pyplot as plt
 import numpy as np
 
-with open("/home/uas/workspace/uas_ws/src/flight_stack/scripts/jerk_tuning/logs/log-2026-05-09T01:29:14.605247.csv", 'r') as f:
+with open("/home/uas/workspace/uas_ws/src/flight_stack/scripts/jerk_tuning/logs/log-2026-05-09T22:03:32.829994.csv", 'r') as f:
     data = f.read()
 data = data.replace('\n', ',')
 data = data.split(',')
@@ -15,12 +15,12 @@ print(data_t[-1])
 
 #data_t = data_t[1:] # corrupted columns bruh
 data = []
-# pathtime, mj_vx, mj_vy, cc_tgt, px, py, pz, vx, vy, vz, ax, ay
-enables = [0,0,0,0,0,0,0,0,0,0,0,1,1]
+# pathtime, mj_vx, mj_vy, cc_tgt, px, py, pz, vx, vy, vz, ax, ay, az
+enables = [0,0,0,0,0,0,0,0,0,0,1,1,0]
 for i, series in enumerate(data_t):
     if not enables[i]: continue
     series = series = [float(x) for x in series]
-    block = 10
+    block = 1
     series = [sum(series[block*i:block*i+block]) / block for i in range(len(series) // block)]
     #seriesmin = [max(series[block*i:block*i+block]) / block for i in range(len(series) // block)]
     #seriesmax = [min(series[block*i:block*i+block]) / block for i in range(len(series) // block)]
@@ -31,9 +31,12 @@ for i, series in enumerate(data_t):
     data.append(series)
 
 print(len(data[0]))
-acc = data[-1]
+acc = data[-2]
+data.append([acc[i + 1] - acc[i] for i in range(len(acc) - 1)])
+acc = data[-2]
 data.append([acc[i + 1] - acc[i] for i in range(len(acc) - 1)])
 
-for series in data:
-    plt.plot(series)
+for i, series in enumerate(data):
+    plt.plot(series, label=i)
+plt.legend()
 plt.show()

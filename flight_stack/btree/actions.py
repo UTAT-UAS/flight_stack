@@ -241,6 +241,7 @@ class MinJerkTraj(BTNode):
             traj_iter = traj_iter.next
             self.duration += traj_iter.duration
             self.subdurations.append(self.subdurations[-1] + traj_iter.duration)
+        self.subdurations.append(self.subdurations[-1] + 1)
 
         self.constants = [
             3 * np.array([20/self.T, -8, -12]) / (2*self.T**2),
@@ -255,23 +256,24 @@ class MinJerkTraj(BTNode):
         self.leg = 0
 
     def projection(self) -> bool:
+        resolution = 0.1
+        if self.pathtime >= self.subdurations[self.leg + 1] - resolution + 0.001: # accumulated floating point error
+            self.leg += 1
+
         closest = self.pathtime
         closest_dist = float('inf')
         cur_pos = np.array([self.fp._position.x, self.fp._position.y, self.fp._position.z])
         # binary search instead of linear interpol?
-        resolution = 0.1
-        for t in np.arange(max(self.pathtime - 5, self.subdurations[self.leg] + resolution), min(self.pathtime + 5, self.subdurations[self.leg + 1] + resolution / 2, self.duration), resolution):
+        for t in np.arange(max(self.pathtime - 5, self.subdurations[self.leg]), min(self.pathtime + 5, self.subdurations[self.leg + 1] + resolution / 2, self.duration), resolution):
             pos = self.traj.path(t)
             dist = np.linalg.norm(cur_pos - pos)
             if dist <= closest_dist:
                 closest_dist = dist
                 closest = t
-        if closest >= self.subdurations[self.leg + 1] - 0.001: # accumulated floating point error
-            self.leg += 1
         return closest
 
     def position(self) -> np.ndarray:
-        return self.traj.path(self.pathtime + self.project_ahead)
+        return list(self.traj.path(self.pathtime + self.project_ahead))
 
     def velocity(self) -> tuple[float, float]:
         """
@@ -323,7 +325,6 @@ class MinJerkTraj(BTNode):
             sum_v_x += vx0 + np.dot(np.matmul(self.constants, [dpx, vx1, vx0]), self.powers[i])
             sum_v_y += vy0 + np.dot(np.matmul(self.constants, [dpy, vy1, vy0]), self.powers[i])
         return sum_v_x/len(self.powers), sum_v_y/len(self.powers)
-        #return (sum_v_x**2 + sum_v_y**2) ** 0.5 / len(self.powers)
 
     def tick(self):
         # Action based, tries to clock as fast as btree
@@ -336,15 +337,15 @@ class MinJerkTraj(BTNode):
             return self.status
 
         self.pathtime = self.projection()
-        #self.target_spd = self.velocity_scale()
-        #print(f"{self.name} target speed: {self.target_spd}")
+        current_spd = (self.fp._position.vx**2 + self.fp._position.vy**2) ** 0.5
+        self.project_ahead = 0.025 + 0.475 * current_spd / self.target_vel
 
-        self.traj_sp.position = list(self.traj.path(self.pathtime))
-        #self.traj_sp.velocity = list(self.traj.velocity(self.pathtime) * self.target_spd)
+        self.traj_sp.position = self.position()
         vx, vy = self.velocity()
-        print(f"{self.name} target vel: {vx}, {vy}")
+        print(f"{self.name} - Pathtime: {self.pathtime}, Velocity: {vx}, {vy}")
         self.traj_sp.velocity = [vx, vy, 0.0]
         self.fp._traj_publisher.publish(self.traj_sp)
+
         return self.status
 
 
