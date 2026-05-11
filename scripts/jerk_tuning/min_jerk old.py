@@ -34,10 +34,6 @@ class MinJerkTraj(utils.BTNode):
         self.traj_sp.yaw = math.nan
         self.traj_sp.yawspeed = math.nan
 
-        # restrict path jumping
-        self.leg = 0
-        self.subdurations = []
-
         # parameters
         self.T = forecast_time
         self.target_vel = target_vel
@@ -50,13 +46,10 @@ class MinJerkTraj(utils.BTNode):
     def initialize(self):
         super().initialize()
         self.duration = self.traj.duration
-        self.subdurations = [0, self.traj.duration]
         traj_iter = self.traj
         while traj_iter.next != None:
             traj_iter = traj_iter.next
             self.duration += traj_iter.duration
-            self.subdurations.append(self.subdurations[-1] + traj_iter.duration)
-        self.subdurations.append(self.subdurations[-1] + 1)
 
         self.constants = [
             3 * np.array([20/self.T, -8, -12]) / (2*self.T**2),
@@ -68,21 +61,16 @@ class MinJerkTraj(utils.BTNode):
     def reset(self):
         super().reset()
         self.pathtime = 0
-        self.leg = 0
 
     def projection(self) -> bool:
-        resolution = 0.1
-        if self.pathtime >= self.subdurations[self.leg + 1] - resolution + 0.001: # accumulated floating point error
-            self.leg += 1
-
         closest = self.pathtime
         closest_dist = float('inf')
         cur_pos = np.array([self.fp._position.x, self.fp._position.y, self.fp._position.z])
         # binary search instead of linear interpol?
-        for t in np.arange(max(self.pathtime - 5, self.subdurations[self.leg]), min(self.pathtime + 5, self.subdurations[self.leg + 1] + resolution / 2, self.duration), resolution):
+        for t in np.arange(max(self.pathtime - 5, 0), min(self.pathtime + 5, self.duration), 0.1):
             pos = self.traj.path(t)
             dist = np.linalg.norm(cur_pos - pos)
-            if dist <= closest_dist:
+            if dist < closest_dist:
                 closest_dist = dist
                 closest = t
         return closest
@@ -153,8 +141,6 @@ class MinJerkTraj(utils.BTNode):
             return self.status
 
         self.pathtime = self.projection()
-        current_spd = (self.fp._position.vx**2 + self.fp._position.vy**2) ** 0.5
-        self.project_ahead = 0.025 + 0.475 * current_spd / self.target_vel
 
         self.traj_sp.position = self.position()
         #self.traj_sp.velocity = list(self.traj.velocity(self.pathtime) * self.target_spd)
