@@ -45,9 +45,12 @@ class SetGotoMode(BTNode):
         self.fp = fp
 
     def tick(self):
-        # send current position as goto setpoint before switch to goto mode (otherwise might have large jump)
+        # flush flight_core of stale setpoints
         goto = GotoSetpoint()
         goto.position = [self.fp._position.x, self.fp._position.y, self.fp._position.z]
+        if any(p == 0 for p in goto.position):
+            print(f"warning {self.name}: can't flush flight core, suspicious position {goto.position}")
+            return self.status
         goto.flag_control_heading = False
         self.fp._goto_publisher.publish(goto) # publish multiple times to ensure received before mode switch
         self.fp._goto_publisher.publish(goto)
@@ -69,6 +72,9 @@ class SetTrajMode(BTNode):
         # send current position as traj setpoint to switch to traj mode (otherwise might have large jump)
         traj = TrajectorySetpoint()
         traj.position = [self.fp._position.x, self.fp._position.y, self.fp._position.z]
+        if any(p == 0 for p in traj.position):
+            print(f"warning {self.name}: can't flush flight core, suspicious position {traj.position}")
+            return self.status
         traj.velocity = [0.0, 0.0, 0.0]
         traj.yaw = self.fp._position.heading
         traj.yawspeed = 0.0
@@ -81,7 +87,7 @@ class SetTrajMode(BTNode):
         self.fp._core_command_client.call_async(command)
         self.status = STATUS.SUCCESS
         return self.status
-    
+
 
 class Land(BTNode):
     def __init__(self, name, fp:FlightPlanner):

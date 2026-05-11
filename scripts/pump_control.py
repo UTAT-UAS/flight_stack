@@ -2,7 +2,7 @@
 
 import rclpy
 from rclpy.node import Node
-from std_msgs.msg import Int32, Float32
+from std_msgs.msg import Int32, Float32, Bool
 from px4_msgs.msg import ActuatorServos, ManualControlSetpoint, VehicleCommand
 from std_srvs.srv import SetBool, Empty
 import time
@@ -18,6 +18,8 @@ class PumpControl(Node):
         self.declare_parameter("pump_index", 1)
         self.declare_parameter("servo_index", 0)
         self.declare_parameter("servo_max_angle", 32.0)
+        self.declare_parameter("servo_max_jiggle", 4.0)  # 4deg above and below
+        self.declare_parameter("servo_jiggle_freq", 3.0)  # 3hz
         self.declare_parameter("pump_on_throttle", 1.0)  # mapping 1.0 to full forward
         self.declare_parameter(
             "pump_off_throttle", -1.0
@@ -27,9 +29,10 @@ class PumpControl(Node):
         self.pump_idx = self.get_parameter("pump_index").value
         self.servo_idx = self.get_parameter("servo_index").value
         self.max_angle = self.get_parameter("servo_max_angle").value
+        self.max_jiggle = self.get_parameter("servo_max_jiggle").value
+        self.jiggle_freq = self.get_parameter("servo_jiggle_freq").value
         self.pump_on_val = self.get_parameter("pump_on_throttle").value
         self.pump_off_val = self.get_parameter("pump_off_throttle").value
-
         self.pump_sub = self.create_subscription(
             Int32, "/set_pump_time", self.pump_callback, 10
         )
@@ -63,6 +66,10 @@ class PumpControl(Node):
             ManualControlSetpoint, "/fmu/in/manual_control_input", self.manual_input_callback, 10
         )
 
+        self.servo_jiggle_toggle_sub = self.create_subscription(
+            Bool, "/uas/pump/servo_jiggle_toggle", self.servo_jiggle_toggle_callback, 10
+        )
+
         self.total_pump_time = 0.0
         self.total_pump_time_primed = 0.0
         self.prime_time = 0.3
@@ -80,10 +87,15 @@ class PumpControl(Node):
         self.pump_off_time = 0.0
 
         self.current_servo_val = 0.0
+        self.servo_jiggle_enabled = False
+        self.jiggle_servo_val = 0.0
         self.current_pump_val = self.pump_off_val
 
         # publisher loop
-        self.control_timer = self.create_timer(0.05, self.publish_controls)  # 20 Hz
+        self.control_rate = 0.05
+        self.control_timer = self.create_timer(self.control_rate, self.publish_controls)  # 20 Hz
+
+        self.jiggle_servo_rate = 4 * self.max_jiggle * self.jiggle_freq * self.control_rate
 
     def pump_callback(self, msg):
         time_ms = msg.data
@@ -92,6 +104,7 @@ class PumpControl(Node):
             self.pump_off_time = 0.0
         else:
             self.current_pump_val = self.pump_on_val
+            self.jiggle_servo_val = 0
             self.pump_off_time = (
                 self.get_clock().now().nanoseconds / 1e9 + time_ms / 1000.0
             )
@@ -108,6 +121,10 @@ class PumpControl(Node):
         if self.is_firing:
             self.firing_start_time = now
         return response
+
+    def servo_jiggle_toggle_callback(self, msg):
+        self.servo_jiggle_enabled = msg.data
+        self.jiggle_servo_val = 0.0
 
     def manual_input_callback(self, msg: ManualControlSetpoint):
         self.manual_firing = (msg.aux4 >= 0.8)
@@ -153,6 +170,7 @@ class PumpControl(Node):
         if self.pump_off_time > 0 and now >= self.pump_off_time:
             self.current_pump_val = self.pump_off_val
             self.pump_off_time = 0.0
+            self.jiggle_servo_val = 0.0
 
         self.auto_firing = (self.current_pump_val == self.pump_on_val)
         currently_firing = self.manual_firing or self.auto_firing
@@ -171,6 +189,9 @@ class PumpControl(Node):
         if self.is_firing:
             current_firing_time = now - self.firing_start_time
             current_firing_time_primed = max(0.0, current_firing_time - self.prime_time)
+            if self.servo_jiggle_enabled:
+                self.jiggle_servo_val += self.jiggle_servo_rate
+                self.jiggle_servo_rate = -self.jiggle_servo_rate if abs(self.jiggle_servo_val) >= self.max_jiggle else self.jiggle_servo_rate
 
         msg_time = Float32()
         msg_time.data = float(self.total_pump_time + current_firing_time)
@@ -189,7 +210,7 @@ class PumpControl(Node):
         if 0 <= self.pump_idx < 6:
             params[self.pump_idx] = float(self.current_pump_val)
         if 0 <= self.servo_idx < 6:
-            params[self.servo_idx] = float(self.current_servo_val)
+            params[self.servo_idx] = float(self.current_servo_val + self.jiggle_servo_val)
 
         msg.param1 = params[0]
         msg.param2 = params[1]
