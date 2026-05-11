@@ -177,22 +177,14 @@ class MinJerkTester(FlightPlanner):
                         resolution=0.1,
                         project_ahead=0.1
                     )
-        self.btree = manager.BehaviorTree("min_jerk_trajectory_test")
+        self.btree = manager.BehaviorTree("min_jerk_trajectory_test_old")
         self.btree.setroot(
             controls.Sequence(
                 name="root",
                 children=[
-                    decorators.RemapStatus(
-                        name="always_succeed_offboard",
-                        child=decorators.Timeout(
-                            name="offboard_timeout",
-                            timeout=5,
-                            child=actions.SetOffboard(
-                                name="set_offboard",
-                                fp=self
-                            )
-                        ),
-                        remap={utils.STATUS.FAILURE: utils.STATUS.SUCCESS}
+                    actions.AwaitOffboard(
+                        name="await_offboard",
+                        fp=self
                     ),
                     actions.SetTrajMode(
                         name="set_traj",

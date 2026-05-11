@@ -26,12 +26,36 @@ class SetOffboard(BTNode):
         return self.status
 
 
+class AwaitOffboard(BTNode):
+    def __init__(self, name, fp:FlightPlanner):
+        super().__init__(name)
+        self.fp = fp
+
+    def tick(self):
+        print("awaiting offboard")
+        if self.fp._status.nav_state != VehicleStatus.NAVIGATION_STATE_OFFBOARD:
+            return self.status
+        self.status = STATUS.SUCCESS
+        return self.status
+
+
+
 class SetGotoMode(BTNode):
     def __init__(self, name, fp:FlightPlanner):
         super().__init__(name)
         self.fp = fp
 
     def tick(self):
+        # flush flight_core of stale setpoints
+        goto = GotoSetpoint()
+        goto.position = [self.fp._position.x, self.fp._position.y, self.fp._position.z]
+        if any(p == 0 for p in goto.position):
+            print(f"warning {self.name}: can't flush flight core, suspicious position {goto.position}")
+            return self.status
+        goto.flag_control_heading = False
+        self.fp._goto_publisher.publish(goto) # publish multiple times to ensure received before mode switch
+        self.fp._goto_publisher.publish(goto)
+        self.fp._goto_publisher.publish(goto)
         print("CoreMode -> GOTO request sent")
         command = CoreCommand.Request()
         command.request.command = 6 # CORE_GOTO request command
@@ -46,13 +70,25 @@ class SetTrajMode(BTNode):
         self.fp = fp
 
     def tick(self):
+        # send current position as traj setpoint to switch to traj mode (otherwise might have large jump)
+        traj = TrajectorySetpoint()
+        traj.position = [self.fp._position.x, self.fp._position.y, self.fp._position.z]
+        if any(p == 0 for p in traj.position):
+            print(f"warning {self.name}: can't flush flight core, suspicious position {traj.position}")
+            return self.status
+        traj.velocity = [0.0, 0.0, 0.0]
+        traj.yaw = self.fp._position.heading
+        traj.yawspeed = 0.0
+        self.fp._traj_publisher.publish(traj) # publish multiple times to ensure received before mode switch
+        self.fp._traj_publisher.publish(traj)
+        self.fp._traj_publisher.publish(traj)
         print("CoreMode -> TRAJ request sent")
         command = CoreCommand.Request()
         command.request.command = 7 # CORE_TRAJ request command
         self.fp._core_command_client.call_async(command)
         self.status = STATUS.SUCCESS
         return self.status
-    
+
 
 class Land(BTNode):
     def __init__(self, name, fp:FlightPlanner):
