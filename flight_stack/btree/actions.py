@@ -388,7 +388,7 @@ class AutoCenterTraj(BTNode):
         self.goto.position = [self.fp._position.x, self.fp._position.y, self.fp._position.z]
         self.goto.velocity = [0.0, 0.0, 0.0]
         self.goto.yaw = self.fp._position.heading
-        self.goto.yawspeed = 0
+        self.goto.yawspeed = 0.0
         if self.child:
             self.child.initialize()
 
