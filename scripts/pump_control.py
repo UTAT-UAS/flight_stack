@@ -2,9 +2,9 @@
 
 import rclpy
 from rclpy.node import Node
-from std_msgs.msg import Int32
+from std_msgs.msg import Int32, Float32
 from px4_msgs.msg import ActuatorServos, ManualControlSetpoint, VehicleCommand
-from std_srvs.srv import SetBool
+from std_srvs.srv import SetBool, Empty
 import time
 import struct
 from pymavlink import mavutil
@@ -52,6 +52,25 @@ class PumpControl(Node):
             SetBool, "/toggle_peripheral_mode", self.toggle_peripheral_callback
         )
 
+        self.reset_srv = self.create_service(
+            Empty, "/uas/pump/reset_timers", self.reset_timers_callback
+        )
+
+        self.time_pub = self.create_publisher(Float32, "/uas/pump/time", 10)
+        self.time_primed_pub = self.create_publisher(Float32, "/uas/pump/time_primed", 10)
+
+        self.manual_sub = self.create_subscription(
+            ManualControlSetpoint, "/fmu/in/manual_control_input", self.manual_input_callback, 10
+        )
+
+        self.total_pump_time = 0.0
+        self.total_pump_time_primed = 0.0
+        self.prime_time = 0.3
+        self.is_firing = False
+        self.firing_start_time = 0.0
+        self.manual_firing = False
+        self.auto_firing = False
+
         if self.debug:
             self.manual_pub = self.create_publisher(
                 ManualControlSetpoint, "/fmu/in/manual_control_input", 10
@@ -81,6 +100,17 @@ class PumpControl(Node):
         angle = msg.data
         angle = max(min(angle, self.max_angle), -self.max_angle)
         self.current_servo_val = angle / self.max_angle
+
+    def reset_timers_callback(self, request, response):
+        self.total_pump_time = 0.0
+        self.total_pump_time_primed = 0.0
+        now = self.get_clock().now().nanoseconds / 1e9
+        if self.is_firing:
+            self.firing_start_time = now
+        return response
+
+    def manual_input_callback(self, msg: ManualControlSetpoint):
+        self.manual_firing = (msg.aux4 >= 0.8)
 
     def toggle_peripheral_callback(self, request, response):
         if request.data:
@@ -123,6 +153,32 @@ class PumpControl(Node):
         if self.pump_off_time > 0 and now >= self.pump_off_time:
             self.current_pump_val = self.pump_off_val
             self.pump_off_time = 0.0
+
+        self.auto_firing = (self.current_pump_val == self.pump_on_val)
+        currently_firing = self.manual_firing or self.auto_firing
+
+        if currently_firing and not self.is_firing:
+            self.is_firing = True
+            self.firing_start_time = now
+        elif not currently_firing and self.is_firing:
+            self.is_firing = False
+            duration = now - self.firing_start_time
+            self.total_pump_time += duration
+            self.total_pump_time_primed += max(0.0, duration - self.prime_time)
+            
+        current_firing_time = 0.0
+        current_firing_time_primed = 0.0
+        if self.is_firing:
+            current_firing_time = now - self.firing_start_time
+            current_firing_time_primed = max(0.0, current_firing_time - self.prime_time)
+
+        msg_time = Float32()
+        msg_time.data = float(self.total_pump_time + current_firing_time)
+        self.time_pub.publish(msg_time)
+
+        msg_primed = Float32()
+        msg_primed.data = float(self.total_pump_time_primed + current_firing_time_primed)
+        self.time_primed_pub.publish(msg_primed)
 
         msg = VehicleCommand()
         msg.timestamp = int(now * 1e6)
