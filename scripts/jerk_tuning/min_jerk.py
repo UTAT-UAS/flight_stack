@@ -161,7 +161,7 @@ class MinJerkTraj(utils.BTNode):
         vx, vy = self.velocity()
         print(f"{self.name} - Pathtime: {self.pathtime}, Velocity: {vx}, {vy}")
         self.traj_sp.velocity = [vx, vy, 0.0]
-        self.traj_sp.yaw = math.atan2(vy, vx)
+        self.traj_sp.yaw = math.atan2(vy, vx) if vx*vx + vy*vy > 0.0001 else self.traj_sp.yaw
         self.fp._traj_publisher.publish(self.traj_sp)
 
         return self.status
