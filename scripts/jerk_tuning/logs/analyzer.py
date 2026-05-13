@@ -2,8 +2,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 files = [
-    "/home/uas/workspace/uas_ws/src/flight_stack/scripts/jerk_tuning/logs/log-minjerk-old.csv",
-    "/home/uas/workspace/uas_ws/src/flight_stack/scripts/jerk_tuning/logs/log-minjerk-new.csv",
+    "/home/uas/workspace/uas_ws/src/flight_stack/scripts/jerk_tuning/logs/log-minjerk-old-ft.csv",
+    "/home/uas/workspace/uas_ws/src/flight_stack/scripts/jerk_tuning/logs/log-minjerk-new-ft.csv",
 ]
 
 def extract_data(file):
@@ -21,7 +21,7 @@ def extract_data(file):
     #data_t = data_t[1:] # corrupted columns bruh
     data = []
     # pathtime, mj_vx, mj_vy, cc_tgt, px, py, pz, vx, vy, vz, ax, ay, az
-    enables = [0,0,0,0,0,0,0,0,0,0,1,1,0]
+    enables = [1,1,1,0,0,0,0,0,0,0,1,1,0]
     for i, series in enumerate(data_t):
         if not enables[i]: continue
         series = series = [float(x) for x in series]
@@ -41,7 +41,7 @@ def extract_data(file):
     acc = data[-2]
     data.append([acc[i + 1] - acc[i] for i in range(len(acc) - 1)])
 
-    return data[2:]
+    return data
 
 def main():
     fig, axes = plt.subplots(len(files))
@@ -50,7 +50,7 @@ def main():
         for j, series in enumerate(data):
             axes[i].plot(series, label=j)
         axes[i].legend()
-        axes[i].set_ylim(-0.3, 0.3)
+        #axes[i].set_ylim(-0.3, 0.3)
     plt.show()
 
 if __name__ == "__main__":
