@@ -44,20 +44,20 @@ class BTreeFlightPlanner(FlightPlanner):
             controls.Sequence(
                 name="root",
                 children=[
-                    actions.AwaitOffboard(name="await_offboard", fp=self),
+                    actions.AwaitOffboard(name="await_offboard"),
                     controls.Sequence(
                         name="movement_adjust",
                         children=[
-                            actions.SetGotoMode(name="set_goto", fp=self),
-                            actions.AdjustFromDetection(name="adjust_from_detection", fp=self),
-                            actions.MoveToTarget(name="move_to_target", fp=self)
+                            actions.SetGotoMode(name="set_goto"),
+                            actions.AdjustFromDetection(name="adjust_from_detection"),
+                            actions.MoveToTarget(name="move_to_target")
                         ],
                     ),
-                    actions.SetTrajMode(name="set_traj", fp=self),
+                    actions.SetTrajMode(name="set_traj"),
                     actions.AutoCenterTraj(
                         name="auto_center",
                         fp=self,
-                        child=actions.ShootWhenCentered(name="shoot", fp=self, threshold=10.0, wait_time=3.0, pump_time=2000),
+                        child=actions.ShootWhenCentered(name="shoot", threshold=10.0, wait_time=3.0, pump_time=2000),
                         k=0.0005,
                         floor_tol=10,
                         max_rate=0.2,
@@ -65,7 +65,7 @@ class BTreeFlightPlanner(FlightPlanner):
                 ],
             )
         )
-        self.btree.setup()
+        self.btree.setup(self)
         time.sleep(1)  # wait for setup to complete
         self.btree.initialize()
 

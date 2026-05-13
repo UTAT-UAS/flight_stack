@@ -1,5 +1,6 @@
 import time
 
+from flight_stack.flight_stack import FlightPlanner
 from .utils import BTNode, STATUS
 
 class DecoratorNode(BTNode):
@@ -7,9 +8,9 @@ class DecoratorNode(BTNode):
         super().__init__(name)
         self.child = child
 
-    def setup(self, blackboard:dict):
-        super().setup(blackboard)
-        self.child.setup(blackboard)
+    def setup(self, blackboard:dict, fp:FlightPlanner):
+        super().setup(blackboard, fp)
+        self.child.setup(blackboard, fp)
 
     def initialize(self):
         super().initialize()

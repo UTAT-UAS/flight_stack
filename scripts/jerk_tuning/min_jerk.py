@@ -169,21 +169,20 @@ class MinJerkTester(FlightPlanner):
             controls.Sequence(
                 name="root",
                 children=[
-                    decorators.Timeout(
-                        name="offboard_timeout",
-                        timeout=5,
-                        child=actions.SetOffboard(
-                            name="set_offboard",
-                            fp=self
-                        )
-                    ),
+                    #decorators.Timeout(
+                    #    name="offboard_timeout",
+                    #    timeout=5,
+                    #    child=actions.SetOffboard(
+                    #        name="set_offboard",
+                    #        fp=self
+                    #    )
+                    #),
                     actions.SetTrajMode(
                         name="set_traj",
-                        fp=self
                     ),
-                    MinJerkTraj(
+                    actions.MinJerkTraj(
                         name="min_jerk",
-                        fp=self,
+                        #fp=self,
                         traj=self.traj,
                         target_vel=5,
                         forecast_time=4,
@@ -193,7 +192,7 @@ class MinJerkTester(FlightPlanner):
                 ]
             )
         )
-        self.btree.setup()
+        self.btree.setup(self)
         time.sleep(1)  # wait for setup to complete
         self.btree.initialize()
 

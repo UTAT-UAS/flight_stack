@@ -1,3 +1,4 @@
+from flight_stack.flight_stack import FlightPlanner
 from .utils import BTNode, STATUS
 
 class ControlNode(BTNode):
@@ -5,16 +6,16 @@ class ControlNode(BTNode):
         super().__init__(name)
         self.children = children
 
-    def setup(self, blackboard:dict):
-        super().setup(blackboard)
+    def setup(self, blackboard:dict, fp:FlightPlanner):
+        super().setup(blackboard, fp)
         for child in self.children:
-            child.setup(blackboard)
+            child.setup(blackboard, fp)
 
     def initialize(self):
         super().initialize()
         for child in self.children:
             child.initialize()
-    
+
     def reset(self):
         for child in self.children:
             child.reset()

@@ -35,30 +35,23 @@ class BTreeFlightPlanner(FlightPlanner):
             controls.Sequence(
                 name="root",
                 children=[
-                    decorators.Timeout(
-                        name="offboard_timeout",
-                        timeout=5,
-                        child=actions.SetOffboard(
-                            name="set_offboard",
-                            fp=self
-                        )
+                    actions.AwaitOffboard(
+                        name="await_offboard",
                     ),
                     actions.SetTrajMode(
                         name="set_traj",
-                        fp=self
                     ),
                     actions.AutoCenterTraj(
                         name="auto_center",
-                        fp=self,
                         child=utils.BTNode("indefinite"),
                         k=0.0005,
                         floor_tol=10,
-                        max_rate=0.2,
+                        max_rate=0.1,
                     )
                 ]
             )
         )
-        self.btree.setup()
+        self.btree.setup(self)
         time.sleep(1)  # wait for setup to complete
         self.btree.initialize()
 

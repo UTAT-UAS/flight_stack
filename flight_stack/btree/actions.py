@@ -13,24 +13,18 @@ from std_msgs.msg import Int32
 from .utils import BTNode, STATUS
 
 class SetOffboard(BTNode):
-    def __init__(self, name, fp:FlightPlanner):
-        super().__init__(name)
-        self.fp = fp
-
     def tick(self):
         if self.fp._status.nav_state != VehicleStatus.NAVIGATION_STATE_OFFBOARD:
             print("requesting offboard")
             command = CoreCommand.Request()
             command.request.command = 2
             self.fp._core_command_client.call_async(command)
-        else: self.status = STATUS.SUCCESS
+        else:
+            self.status = STATUS.SUCCESS
+        return self.status
 
 
 class AwaitOffboard(BTNode):
-    def __init__(self, name, fp:FlightPlanner):
-        super().__init__(name)
-        self.fp = fp
-
     def tick(self):
         print("awaiting offboard")
         if self.fp._status.nav_state != VehicleStatus.NAVIGATION_STATE_OFFBOARD:
@@ -40,13 +34,9 @@ class AwaitOffboard(BTNode):
 
 
 class SetGotoMode(BTNode):
-    def __init__(self, name, fp:FlightPlanner):
-        super().__init__(name)
-        self.fp = fp
-
     def tick(self):
         # flush flight_core of stale setpoints
-        goto = GotoSetpoint()
+        goto = self.blackboard.get("goto_sp")
         goto.position = [self.fp._position.x, self.fp._position.y, self.fp._position.z]
         if any(p == 0 for p in goto.position):
             print(f"warning {self.name}: can't flush flight core, suspicious position {goto.position}")
@@ -64,13 +54,9 @@ class SetGotoMode(BTNode):
 
 
 class SetTrajMode(BTNode):
-    def __init__(self, name, fp:FlightPlanner):
-        super().__init__(name)
-        self.fp = fp
-
     def tick(self):
         # send current position as traj setpoint to switch to traj mode (otherwise might have large jump)
-        traj = TrajectorySetpoint()
+        traj = self.blackboard.get("traj_sp")
         traj.position = [self.fp._position.x, self.fp._position.y, self.fp._position.z]
         if any(p == 0 for p in traj.position):
             print(f"warning {self.name}: can't flush flight core, suspicious position {traj.position}")
@@ -90,10 +76,6 @@ class SetTrajMode(BTNode):
 
 
 class Land(BTNode):
-    def __init__(self, name, fp:FlightPlanner):
-        super().__init__(name)
-        self.fp = fp
-
     def tick(self):
         # send land command
         print("land request sent")
@@ -106,20 +88,31 @@ class Land(BTNode):
 
 class Hover(BTNode):
     # Only works for GOTO mode
-    def __init__(self, name, fp:FlightPlanner, duration:float):
+    def __init__(self, name, duration:float, goto_mode:bool):
         super().__init__(name)
-        self.fp = fp
         self.duration = duration
         self.start_time = 0
-        self.hold_pos = GotoSetpoint()
+        self.holdpos = [0.0, 0.0, 0.0]
+        self.sp = None
+        self.goto_mode = goto_mode
 
     def initialize(self):
         super().initialize()
         self.start_time = time.time()
-        self.hold_pos.position = [self.fp._position.x, self.fp._position.y, self.fp._position.z]
+        self.holdpos = [self.fp._position.x, self.fp._position.y, self.fp._position.z]
+        if self.goto_mode:
+            self.sp = self.blackboard.get("goto_sp")
+        else:
+            self.sp = self.blackboard.get("traj_sp")
+            self.sp.velocity = [0.0, 0.0, 0.0]
+        self.sp.position = self.holdpos
 
     def tick(self):
-        self.fp._goto_publisher.publish(self.hold_pos)
+        if self.goto_mode:
+            self.blackboard["goto_sp_pub_req"] = True
+        else:
+            self.blackboard["traj_sp_pub_req"] = True
+
         if time.time() - self.start_time > self.duration:
             self.status = STATUS.SUCCESS
         return self.status
@@ -149,9 +142,8 @@ class Timer(BTNode):
 
 
 class Goto(BTNode):
-    def __init__(self, name, fp:FlightPlanner, points:list[list[float]]):
+    def __init__(self, name, points:list[list[float]]):
         super().__init__(name)
-        self.fp = fp
         self.points = points
         self.waypoints = []
         self.wpi = 0
@@ -177,7 +169,7 @@ class Goto(BTNode):
         print("goto", self.wpi)
         self.fp._goto_publisher.publish(self.waypoints[self.wpi])
         if self.has_reached():
-            print("reached", self.wpi)
+            print(f"{self.name}: reached waypoint {self.wpi}")
             print(self.waypoints[self.wpi].position)
             self.wpi += 1
 
@@ -186,16 +178,18 @@ class Goto(BTNode):
         return self.status
 
 
-class Traj(BTNode):
-    def __init__(self, name, fp:FlightPlanner, traj:trajectory.Trajectory):
+class BasicTraj(BTNode):
+    def __init__(self, name, traj:trajectory.Trajectory, project_ahead:float=0.1):
         super().__init__(name)
-        self.fp = fp
         self.traj = traj
+        self.duration = 0
         self.pathtime = 0
-        self.goto = TrajectorySetpoint()
+        self.traj_sp = None
+        self.project_ahead = project_ahead
 
     def initialize(self):
         super().initialize()
+        self.traj_sp = self.blackboard.get("traj_sp")
         self.duration = self.traj.duration
         traj_iter = self.traj
         while traj_iter.next != None:
@@ -217,42 +211,34 @@ class Traj(BTNode):
             if dist < closest_dist:
                 closest_dist = dist
                 closest = t
-        return closest + 1
+        return closest
 
-    def velocity_scale(self) -> float:
-        slowdown = 1
-        last_v = self.traj.velocity(self.pathtime - 9)
-        for dt in np.arange(-10, 10, 0.1):
-            v = self.traj.velocity(self.pathtime + 1 + dt)
-            slowdown += 0.4 * np.linalg.norm(v - last_v) * (2 - abs(dt)/5.05)
-            last_v = v
-        return max(1, 5 / slowdown)
+    def position(self) -> np.ndarray:
+        return list(self.traj.path(self.pathtime + self.project_ahead))
 
     def tick(self):
         # Action based, tries to clock as fast as btree
         # How to determine failure? built in time out?
         if self.pathtime > self.duration - 1:
+            self.traj_sp.position = list(self.traj.path(self.duration))
+            self.traj_sp.velocity = [0.0, 0.0, 0.0]
+            self.blackboard["traj_sp_pub_req"] = True
             self.status = STATUS.SUCCESS
             return self.status
         self.pathtime = self.projection()
-        self.goto.position = list(self.traj.path(self.pathtime))
-        vscale = self.velocity_scale()
-        print(vscale)
-        self.goto.velocity = list(self.traj.velocity(self.pathtime) * vscale)
-        self.fp._traj_publisher.publish(self.goto)
+        self.traj_sp.position = self.position()
+        self.traj_sp.velocity = list(self.traj.velocity(self.pathtime + self.project_ahead))
+        self.blackboard["traj_sp_pub_req"] = True
         return self.status
 
 
 class MinJerkTraj(BTNode):
-    def __init__(self, name, fp:FlightPlanner, traj:trajectory.Trajectory, target_vel:float, forecast_time:float, resolution:float=0.1, project_ahead:float=0.1):
+    def __init__(self, name, traj:trajectory.Trajectory, target_vel:float, forecast_time:float, resolution:float=0.1, project_ahead:float=0.1):
         super().__init__(name)
-        self.fp = fp
         self.traj = traj
         self.pathtime = 0
         self.duration = 0
-        self.traj_sp = TrajectorySetpoint()
-        self.traj_sp.yaw = math.nan
-        self.traj_sp.yawspeed = math.nan
+        self.traj_sp = None
 
         # parameters
         self.T = forecast_time
@@ -265,6 +251,9 @@ class MinJerkTraj(BTNode):
 
     def initialize(self):
         super().initialize()
+        self.traj_sp = self.blackboard.get("traj_sp")
+        self.traj_sp.yaw = math.nan
+        self.traj_sp.yawspeed = math.nan
         self.duration = self.traj.duration
         traj_iter = self.traj
         while traj_iter.next != None:
@@ -356,7 +345,7 @@ class MinJerkTraj(BTNode):
         if self.pathtime > self.duration - self.project_ahead:
             self.traj_sp.position = list(self.traj.path(self.duration))
             self.traj_sp.velocity = [0.0, 0.0, 0.0]
-            self.fp._traj_publisher.publish(self.traj_sp)
+            self.blackboard["traj_sp_pub_req"] = True
             self.status = STATUS.SUCCESS
             return self.status
 
@@ -369,32 +358,32 @@ class MinJerkTraj(BTNode):
         vx, vy = self.velocity()
         print(f"{self.name} target vel: {vx}, {vy}")
         self.traj_sp.velocity = [vx, vy, 0.0]
-        self.fp._traj_publisher.publish(self.traj_sp)
+        self.blackboard["traj_sp_pub_req"] = True
         return self.status
 
 
 class AutoCenterTraj(BTNode):
-    def __init__(self, name, fp:FlightPlanner, child:BTNode=None, k=0.002, floor_tol=10, max_rate=0.1):
+    def __init__(self, name, child:BTNode=None, k=0.002, floor_tol=10, max_rate=0.1):
         super().__init__(name)
-        self.fp = fp
-        self.goto = TrajectorySetpoint()
+        self.traj_sp = None
         self.k = k
         self.floor_tol = floor_tol
         self.max_rate = max_rate
         self.child = child
 
-    def setup(self, blackboard:dict):
-        super().setup(blackboard)
+    def setup(self, blackboard:dict, fp:FlightPlanner):
+        super().setup(blackboard, fp)
         if self.child:
-            self.child.setup(blackboard)
+            self.child.setup(blackboard, fp)
 
     def initialize(self):
         super().initialize()
+        self.traj_sp = self.blackboard.get("traj_sp")
         # Hover
-        self.goto.position = [self.fp._position.x, self.fp._position.y, self.fp._position.z]
-        self.goto.velocity = [0.0, 0.0, 0.0]
-        self.goto.yaw = self.fp._position.heading
-        self.goto.yawspeed = 0.0
+        self.traj_sp.position = [self.fp._position.x, self.fp._position.y, self.fp._position.z]
+        self.traj_sp.velocity = [0.0, 0.0, 0.0]
+        self.traj_sp.yaw = self.fp._position.heading
+        self.traj_sp.yawspeed = 0.0
         if self.child:
             self.child.initialize()
 
@@ -409,13 +398,13 @@ class AutoCenterTraj(BTNode):
             print("warning: target_dx not found in blackboard")
             dx = 0
         if abs(dx) < self.floor_tol:
-            self.goto.yawspeed = 0.0
+            self.traj_sp.yawspeed = 0.0
         else:
-            self.goto.yawspeed = min(max(self.k * dx, -self.max_rate), self.max_rate)
-            self.goto.yaw = self.fp._position.heading + self.goto.yawspeed * 0.002
-        print(self.goto.yaw, self.goto.yawspeed)
+            self.traj_sp.yawspeed = min(max(self.k * dx, -self.max_rate), self.max_rate)
+            self.traj_sp.yaw = self.fp._position.heading + self.traj_sp.yawspeed * 0.002
+        print(self.traj_sp.yaw, self.traj_sp.yawspeed)
 
-        self.fp._traj_publisher.publish(self.goto)
+        self.blackboard["traj_sp_pub_req"] = True
 
         if self.child:
             self.status = self.child.tick()
@@ -425,13 +414,11 @@ class AutoCenterTraj(BTNode):
         return self.status
 
 class AdjustFromDetection(BTNode):
-    def __init__(self, name, fp:FlightPlanner):
+    def __init__(self, name):
         super().__init__(name)
-        self.fp = fp
         self.has_requested = False
-
-    def setup(self, blackboard:dict):
-        super().setup(blackboard)
+        self.goto_msg = None
+        self.target_pos = None
 
     def initialize(self):
         super().initialize()
@@ -447,20 +434,19 @@ class AdjustFromDetection(BTNode):
 
     def tick(self):
         if self.has_requested:
-            self.fp._goto_publisher.publish(self.goto_msg)
+            self.blackboard["goto_sp_pub_req"] = True
             dist_sq = (self.fp._position.x - self.target_pos[0])**2 + \
                       (self.fp._position.y - self.target_pos[1])**2 + \
                       (self.fp._position.z - self.target_pos[2])**2
-            if dist_sq < 1.0: # 1 meter squared tolerance
-                return STATUS.SUCCESS
-            return STATUS.RUNNING
+            self.status = STATUS.SUCCESS if dist_sq < 1.0 else STATUS.RUNNING  # 1 meter squared tolerance
+            return
 
         if self.blackboard is None or "target_pos" not in self.blackboard:
-            return STATUS.RUNNING
-        
+            return self.status
+
         polygon = self.blackboard.get("target_pos")
         if len(polygon.points) < 5:
-            return STATUS.RUNNING
+            return self.status
 
         p_c = polygon.points[0]
         p_tl = polygon.points[1]
@@ -470,7 +456,7 @@ class AdjustFromDetection(BTNode):
 
         # Ignore if any point is nan
         if any(math.isnan(p.x) for p in [p_c, p_tl, p_tr, p_br, p_bl]):
-            return STATUS.RUNNING
+            return self.status
 
         # Camera frame: x is right, y is down, z is forward
         xl = (p_tl.x + p_bl.x) / 2.0
@@ -491,13 +477,15 @@ class AdjustFromDetection(BTNode):
         n_z = -dx
         norm = math.hypot(n_x, n_z)
         if norm < 1e-3:
-            return STATUS.SUCCESS
+            self.status = STATUS.SUCCESS
+            return self.status
         n_x /= norm
         n_z /= norm
 
         L = math.hypot(xc, zc)
         if L < 1e-3: # too close
-            return STATUS.SUCCESS
+            self.status = STATUS.SUCCESS
+            return self.status
 
         P_cam_x = xc + L * n_x
         P_cam_z = zc + L * n_z
@@ -512,27 +500,26 @@ class AdjustFromDetection(BTNode):
 
         # Transform to NED
         yaw = self.fp._position.heading
-        
+
         delta_N = delta_cam_z * math.cos(yaw) - delta_cam_x * math.sin(yaw)
         delta_E = delta_cam_z * math.sin(yaw) + delta_cam_x * math.cos(yaw)
 
         new_N = float(self.fp._position.x + delta_N)
         new_E = float(self.fp._position.y + delta_E)
         new_D = float(self.fp._position.z) # Keep same altitude
-        
+
         new_yaw = float(yaw + delta_yaw)
         # Normalize yaw to [-pi, pi]
         new_yaw = (new_yaw + math.pi) % (2.0 * math.pi) - math.pi
 
-        goto_msg = GotoSetpoint()
+        goto_msg = self.blackboard.get("goto_sp")
         goto_msg.position = [new_N, new_E, new_D]
         goto_msg.heading = new_yaw
         goto_msg.flag_control_heading = True
 
-        self.goto_msg = goto_msg
         self.target_pos = [new_N, new_E, new_D]
 
-        self.fp._goto_publisher.publish(goto_msg)
+        self.blackboard["goto_sp_pub_req"] = True
         self.has_requested = True
         print(f"AdjustFromDetection: Moving to N={new_N:.2f}, E={new_E:.2f}, D={new_D:.2f}, Yaw={new_yaw:.2f}")
 
@@ -540,14 +527,12 @@ class AdjustFromDetection(BTNode):
 
 
 class MoveToTarget(BTNode):
-    def __init__(self, name, fp:FlightPlanner, target_dist=1.5):
+    def __init__(self, name, target_dist=1.5):
         super().__init__(name)
-        self.fp = fp
         self.target_dist = target_dist
         self.has_requested = False
-
-    def setup(self, blackboard:dict):
-        super().setup(blackboard)
+        self.goto_msg = None
+        self.target_pos = None
 
     def initialize(self):
         super().initialize()
@@ -563,26 +548,25 @@ class MoveToTarget(BTNode):
 
     def tick(self):
         if self.has_requested:
-            self.fp._goto_publisher.publish(self.goto_msg)
+            self.blackboard["goto_sp_pub_req"] = True
             dist_sq = (self.fp._position.x - self.target_pos[0])**2 + \
                       (self.fp._position.y - self.target_pos[1])**2 + \
                       (self.fp._position.z - self.target_pos[2])**2
-            if dist_sq < 1.0: # 1 meter squared tolerance
-                return STATUS.SUCCESS
-            return STATUS.RUNNING
+            self.status = STATUS.SUCCESS if dist_sq < 1.0 else STATUS.RUNNING  # 1 meter squared tolerance
+            return self.status
 
         if self.blackboard is None or "target_pos" not in self.blackboard:
-            return STATUS.RUNNING
-        
+            return self.status
+
         polygon = self.blackboard.get("target_pos")
         if len(polygon.points) == 0:
-            return STATUS.RUNNING
+            return self.status
 
         p_c = polygon.points[0]
 
         # Ignore if the center point is nan
         if math.isnan(p_c.x) or math.isnan(p_c.z):
-            return STATUS.RUNNING
+            return self.status
 
         xc = p_c.x
         zc = p_c.z
@@ -590,7 +574,8 @@ class MoveToTarget(BTNode):
         # Current horizontal distance to target
         L = math.hypot(xc, zc)
         if L < 1e-3:
-            return STATUS.SUCCESS
+            self.status = STATUS.SUCCESS
+            return self.status
 
         # How much distance we need to cover to be exactly target_dist away
         delta_L = L - self.target_dist
@@ -612,29 +597,31 @@ class MoveToTarget(BTNode):
         new_E = float(self.fp._position.y + delta_E)
         new_D = float(self.fp._position.z) # Keep same altitude
 
-        goto_msg = GotoSetpoint()
+        goto_msg = self.blackboard.get("goto_sp")
         goto_msg.position = [new_N, new_E, new_D]
         goto_msg.heading = yaw
         goto_msg.flag_control_heading = True
 
-        self.goto_msg = goto_msg
         self.target_pos = [new_N, new_E, new_D]
 
-        self.fp._goto_publisher.publish(goto_msg)
+        self.blackboard["goto_sp_pub_req"] = True
         self.has_requested = True
         print(f"MoveToTarget: Moving to N={new_N:.2f}, E={new_E:.2f}, D={new_D:.2f}, Yaw={yaw:.2f} (Delta={delta_L:.2f}m)")
 
-        return STATUS.RUNNING
+        return self.status
 
 
 class ShootWhenCentered(BTNode):
-    def __init__(self, name, fp:FlightPlanner, threshold=10.0, wait_time=3.0, pump_time=2000):
+    def __init__(self, name, threshold=10.0, wait_time=3.0, pump_time=2000):
         super().__init__(name)
-        self.fp = fp
         self.threshold = threshold
         self.wait_time = wait_time
         self.pump_time = pump_time
         self.centered_start_time = None
+        self.pump_publisher = None
+
+    def setup(self, blackboard, fp):
+        super().setup(blackboard, fp)
         self.pump_publisher = self.fp.create_publisher(Int32, "/set_pump_time", 10)
 
     def initialize(self):
@@ -648,7 +635,7 @@ class ShootWhenCentered(BTNode):
     def tick(self):
         dx = self.blackboard.get("target_dx")
         if dx is None:
-            return STATUS.RUNNING
+            return self.status
 
         if abs(dx) < self.threshold:
             if self.centered_start_time is None:

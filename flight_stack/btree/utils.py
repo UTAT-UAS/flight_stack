@@ -1,3 +1,5 @@
+from flight_stack.flight_stack import FlightPlanner
+
 class STATUS:
     IDLE = 0
     RUNNING = 1
@@ -12,9 +14,11 @@ class BTNode:
         self.name = name
         self.status = STATUS.IDLE
         self.blackboard = {}
+        self.fp = None
 
-    def setup(self, blackboard:dict):
+    def setup(self, blackboard:dict, fp:FlightPlanner):
         self.blackboard = blackboard
+        self.fp = fp
 
     def initialize(self):
         self.status = STATUS.RUNNING

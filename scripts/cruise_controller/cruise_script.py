@@ -5,6 +5,7 @@ import rclpy
 from flight_stack.flight_stack import FlightPlanner
 from flight_stack.pather import trajectory
 from flight_stack.btree.actions import MinJerkTraj
+from flight_stack.btree.manager import BehaviorTree
 from px4_msgs.msg import VehicleLocalPosition, BatteryStatus, TrajectorySetpoint, OffboardControlMode
 from rclpy.qos import QoSPresetProfiles
 from cruise_controller import CurrentController
@@ -143,14 +144,16 @@ class CruiseNode(FlightPlanner):
 
         self.mj = MinJerkTraj(
             name="min_jerk",
-            fp=self,
             traj=self.traj,
             target_vel=self.cc.base_ff_speed,
             forecast_time=10,
             resolution=1,
             project_ahead=0.5
         )
-        self.mj.initialize()
+        btree = BehaviorTree("cruise_control_and_curvature_test")
+        btree.setroot(self.mj)
+        btree.setup(self)
+        btree.initialize()
 
     def _manual_ema(self, current_val, previous_ema, alpha):
         return (alpha * current_val) + ((1.0 - alpha) * previous_ema)

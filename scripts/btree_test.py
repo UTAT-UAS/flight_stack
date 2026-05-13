@@ -32,31 +32,27 @@ class BTreeFlightPlanner(FlightPlanner):
             controls.Sequence(
                 name="root",
                 children=[
-                    decorators.Timeout(
-                        name="offboard_timeout",
-                        timeout=3,
-                        child=actions.SetOffboard(
-                            name="set_offboard",
-                            fp=self
-                        )
-                    ),
+                    #decorators.Timeout(
+                    #    name="offboard_timeout",
+                    #    timeout=3,
+                    #    child=actions.SetOffboard(
+                    #        name="set_offboard",
+                    #    )
+                    #),
                     actions.SetGotoMode(
                         name="set_goto",
-                        fp=self
                     ),
                     actions.Goto(
                         name="square",
-                        fp=self,
                         points=self.waypoints
                     ),
                     actions.Land(
                         name="land",
-                        fp=self
                     )
                 ]
             )
         )
-        self.btree.setup()
+        self.btree.setup(self)
         time.sleep(1)  # wait for setup to complete
         self.btree.initialize()
 
