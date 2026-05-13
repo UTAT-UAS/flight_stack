@@ -650,3 +650,41 @@ class ShootWhenCentered(BTNode):
             self.centered_start_time = None
 
         return self.status
+
+
+class YawJiggle(BTNode):
+    def __init__(self, name, yaw_amp_deg, yaw_rate, frequency=1.0, max_angle_deg=4.0):
+        super().__init__(name)
+        self.overshoot_target = math.radians(abs(yaw_amp_deg))
+        self.overshoot_rate = math.radians(abs(yaw_rate))
+        # freq OR max_angle to trigger flip
+        self.frequency = frequency
+        self.half_period = 0.5 / self.frequency
+        self.max_angle = math.radians(abs(max_angle_deg))
+        self.start_time = None
+        self.center = 0
+
+    def initialize(self):
+        super().initialize()
+        self.half_period = 0.5 / self.frequency
+        self.start_time = time.time() - self.half_period / 2  # phase offset
+        self.center = self.fp._position.heading
+
+    def tick(self):
+        current_yaw = self.fp._position.heading - self.center
+        if current_yaw > self.max_angle:
+            self.overshoot_target = -abs(self.overshoot_target)
+            self.overshoot_rate = -abs(self.overshoot_rate)
+            self.start_time = time.time()
+        elif current_yaw < -self.max_angle:
+            self.overshoot_target = abs(self.overshoot_target)
+            self.overshoot_rate = abs(self.overshoot_rate)
+            self.start_time = time.time()
+        elif time.time() - self.start_time >= 0.5 / self.frequency:
+            self.overshoot_target = -self.overshoot_target
+            self.overshoot_rate = -self.overshoot_rate
+        traj_sp = self.blackboard.get("traj_sp")
+        traj_sp.yaw = self.center + self.overshoot_target
+        traj_sp.yawspeed = self.overshoot_rate
+        self.blackboard["traj_sp_pub_req"] = True
+        return STATUS.RUNNING

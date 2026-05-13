@@ -18,7 +18,7 @@ class PumpControl(Node):
         self.declare_parameter("pump_index", 1)
         self.declare_parameter("servo_index", 0)
         self.declare_parameter("servo_max_angle", 32.0)
-        self.declare_parameter("servo_max_jiggle", 4.0)  # 4deg above and below
+        self.declare_parameter("servo_max_jiggle_deg", 4.0)  # 4deg above and below
         self.declare_parameter("servo_jiggle_freq", 3.0)  # 3hz
         self.declare_parameter("pump_on_throttle", 1.0)  # mapping 1.0 to full forward
         self.declare_parameter(
@@ -29,7 +29,7 @@ class PumpControl(Node):
         self.pump_idx = self.get_parameter("pump_index").value
         self.servo_idx = self.get_parameter("servo_index").value
         self.max_angle = self.get_parameter("servo_max_angle").value
-        self.max_jiggle = self.get_parameter("servo_max_jiggle").value
+        self.max_jiggle = self.get_parameter("servo_max_jiggle_deg").value / self.max_angle
         self.jiggle_freq = self.get_parameter("servo_jiggle_freq").value
         self.pump_on_val = self.get_parameter("pump_on_throttle").value
         self.pump_off_val = self.get_parameter("pump_off_throttle").value
@@ -210,7 +210,7 @@ class PumpControl(Node):
         if 0 <= self.pump_idx < 6:
             params[self.pump_idx] = float(self.current_pump_val)
         if 0 <= self.servo_idx < 6:
-            params[self.servo_idx] = float(self.current_servo_val + self.jiggle_servo_val)
+            params[self.servo_idx] = min(max(float(self.current_servo_val + self.jiggle_servo_val), -1.0), 1.0)
 
         msg.param1 = params[0]
         msg.param2 = params[1]
