@@ -706,6 +706,14 @@ class YawJiggle(BTNode):
         self.center = self.fp._position.heading
 
     def tick(self):
+        if self.duration is not None and time.time() - self.node_start_time >= self.duration:
+            traj_sp = self.blackboard.get("traj_sp")
+            traj_sp.yaw = self.center
+            traj_sp.yawspeed = 0.0
+            self.blackboard["traj_sp_pub_req"] = True
+            self.status = STATUS.SUCCESS
+            return self.status
+
         current_yaw = (self.fp._position.heading - self.center + math.pi) % (2 * math.pi) - math.pi
         if current_yaw >= self.max_angle:
             self.overshoot_target = -abs(self.overshoot_target)
@@ -723,9 +731,5 @@ class YawJiggle(BTNode):
         traj_sp.yaw = self.center + self.overshoot_target
         traj_sp.yawspeed = self.overshoot_rate
         self.blackboard["traj_sp_pub_req"] = True
-
-        if self.duration is not None and time.time() - self.node_start_time >= self.duration:
-            self.status = STATUS.SUCCESS
-            return self.status
 
         return STATUS.RUNNING
