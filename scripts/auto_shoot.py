@@ -4,6 +4,7 @@ import flight_stack
 print("Using flight_stack from:", flight_stack.__file__)
 import math
 import time
+import collections
 
 import rclpy
 
@@ -77,7 +78,9 @@ class BTreeFlightPlanner(FlightPlanner):
         self.btree.blackboard["target_dx"] = msg.data
 
     def detection_cb(self, msg):
-        self.btree.blackboard["target_pos"] = msg
+        if "target_pos" not in self.btree.blackboard:
+            self.btree.blackboard["target_pos"] = collections.deque(maxlen=5)
+        self.btree.blackboard["target_pos"].append(msg)
 
     def main_loop(self):
         self.btree.tick()

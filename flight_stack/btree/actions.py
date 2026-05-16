@@ -12,6 +12,42 @@ from std_msgs.msg import Int32
 
 from .utils import BTNode, STATUS
 
+
+class PointObj:
+    def __init__(self, x: float, y: float, z: float) -> None:
+        self.x = x
+        self.y = y
+        self.z = z
+
+
+def get_mean_target_points(polygons: collections.deque, min_points: int) -> list[PointObj] | None:
+    if not isinstance(polygons, collections.deque) or len(polygons) < 5:
+        return None
+
+    for poly in polygons:
+        if len(poly.points) < min_points:
+            return None
+        if any(math.isnan(p.x) or math.isnan(p.y) or math.isnan(p.z) for p in poly.points[:min_points]):
+            return None
+
+    mean_points = []
+    n = len(polygons)
+    for i in range(min_points):
+        mean_x = sum(poly.points[i].x for poly in polygons) / n
+        mean_y = sum(poly.points[i].y for poly in polygons) / n
+        mean_z = sum(poly.points[i].z for poly in polygons) / n
+        mean_points.append(PointObj(mean_x, mean_y, mean_z))
+
+    for poly in polygons:
+        for i in range(min_points):
+            p = poly.points[i]
+            m = mean_points[i]
+            if ((p.x - m.x)**2 + (p.y - m.y)**2 + (p.z - m.z)**2)**0.5 > 0.5:
+                return None
+
+    return mean_points
+
+
 class SetOffboard(BTNode):
     def tick(self):
         if self.fp._status.nav_state != VehicleStatus.NAVIGATION_STATE_OFFBOARD:
@@ -444,19 +480,15 @@ class AdjustFromDetection(BTNode):
         if self.blackboard is None or "target_pos" not in self.blackboard:
             return self.status
 
-        polygon = self.blackboard.get("target_pos")
-        if len(polygon.points) < 5:
+        mean_points = get_mean_target_points(self.blackboard.get("target_pos"), 5)
+        if mean_points is None:
             return self.status
 
-        p_c = polygon.points[0]
-        p_tl = polygon.points[1]
-        p_tr = polygon.points[2]
-        p_br = polygon.points[3]
-        p_bl = polygon.points[4]
-
-        # Ignore if any point is nan
-        if any(math.isnan(p.x) for p in [p_c, p_tl, p_tr, p_br, p_bl]):
-            return self.status
+        p_c = mean_points[0]
+        p_tl = mean_points[1]
+        p_tr = mean_points[2]
+        p_br = mean_points[3]
+        p_bl = mean_points[4]
 
         # Camera frame: x is right, y is down, z is forward
         xl = (p_tl.x + p_bl.x) / 2.0
@@ -560,15 +592,11 @@ class MoveToTarget(BTNode):
         if self.blackboard is None or "target_pos" not in self.blackboard:
             return self.status
 
-        polygon = self.blackboard.get("target_pos")
-        if len(polygon.points) == 0:
+        mean_points = get_mean_target_points(self.blackboard.get("target_pos"), 1)
+        if mean_points is None:
             return self.status
 
-        p_c = polygon.points[0]
-
-        # Ignore if the center point is nan
-        if math.isnan(p_c.x) or math.isnan(p_c.z):
-            return self.status
+        p_c = mean_points[0]
 
         xc = p_c.x
         zc = p_c.z
