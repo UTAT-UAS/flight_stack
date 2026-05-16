@@ -118,6 +118,7 @@ class PumpControl(Node):
     def manual_input_callback(self, msg: ManualControlSetpoint):
         if self.pass_through_enabled:
             self.manual_firing = (msg.aux4 >= 0.8)
+            self.current_pump_val = msg.aux4
             self.current_servo_val = msg.aux3
         else:
             self.manual_firing = False
