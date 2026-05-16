@@ -44,7 +44,7 @@ class BTreeFlightPlanner(FlightPlanner):
             controls.Sequence(
                 name="root",
                 children=[
-                    actions.AwaitOffboard(name="await_offboard"),
+                    # actions.AwaitOffboard(name="await_offboard"),
                     controls.Sequence(
                         name="movement_adjust",
                         children=[
@@ -56,8 +56,12 @@ class BTreeFlightPlanner(FlightPlanner):
                     actions.SetTrajMode(name="set_traj"),
                     actions.AutoCenterTraj(
                         name="auto_center",
-                        fp=self,
-                        child=actions.ShootWhenCentered(name="shoot", threshold=10.0, wait_time=3.0, pump_time=2000),
+                        child=controls.Sequence(
+                            name="shoot_sequence",
+                            children=[
+                                actions.ShootWhenCentered(name="shoot", threshold=10.0, wait_time=3.0, pump_time=4000),
+                                actions.YawJiggle(name="yaw_jiggle", duration=4.0),
+                            ]),
                         k=0.0005,
                         floor_tol=10,
                         max_rate=0.2,
@@ -73,7 +77,7 @@ class BTreeFlightPlanner(FlightPlanner):
         self.btree.blackboard["target_dx"] = msg.data
 
     def detection_cb(self, msg):
-        self.btree.blackboard["target_pos"] = msg.data
+        self.btree.blackboard["target_pos"] = msg
 
     def main_loop(self):
         self.btree.tick()

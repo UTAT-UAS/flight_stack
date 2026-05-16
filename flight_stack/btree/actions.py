@@ -439,7 +439,7 @@ class AdjustFromDetection(BTNode):
                       (self.fp._position.y - self.target_pos[1])**2 + \
                       (self.fp._position.z - self.target_pos[2])**2
             self.status = STATUS.SUCCESS if dist_sq < 1.0 else STATUS.RUNNING  # 1 meter squared tolerance
-            return
+            return self.status
 
         if self.blackboard is None or "target_pos" not in self.blackboard:
             return self.status
@@ -514,6 +514,8 @@ class AdjustFromDetection(BTNode):
 
         goto_msg = self.blackboard.get("goto_sp")
         goto_msg.position = [new_N, new_E, new_D]
+        goto_msg.max_horizontal_speed = 1.0
+        goto_msg.flag_set_max_horizontal_speed = True
         goto_msg.heading = new_yaw
         goto_msg.flag_control_heading = True
 
@@ -599,6 +601,8 @@ class MoveToTarget(BTNode):
 
         goto_msg = self.blackboard.get("goto_sp")
         goto_msg.position = [new_N, new_E, new_D]
+        goto_msg.max_horizontal_speed = 1.0
+        goto_msg.flag_set_max_horizontal_speed = True
         goto_msg.heading = yaw
         goto_msg.flag_control_heading = True
 
@@ -653,19 +657,22 @@ class ShootWhenCentered(BTNode):
 
 
 class YawJiggle(BTNode):
-    def __init__(self, name, yaw_amp_deg=4.0, yaw_rate=30, frequency=1.0, max_angle_deg=None):
+    def __init__(self, name, yaw_amp_deg=4.0, yaw_rate=30, frequency=1.0, max_angle_deg=None, duration=None):
         super().__init__(name)
+        self.duration = duration
         self.overshoot_target = math.radians(abs(yaw_amp_deg))
         self.overshoot_rate = math.radians(abs(yaw_rate))
         # freq OR max_angle to trigger flip
         self.frequency = frequency
         self.half_period = 0.5 / self.frequency
-        self.max_angle = math.radians(abs(max_angle_deg)) if self.max_angle is not None else yaw_amp_deg
+        self.max_angle = math.radians(abs(max_angle_deg)) if max_angle_deg is not None else yaw_amp_deg
         self.start_time = None
+        self.node_start_time = None
         self.center = 0
 
     def initialize(self):
         super().initialize()
+        self.node_start_time = time.time()
         self.half_period = 0.5 / self.frequency
         self.start_time = time.time() - self.half_period / 2  # phase offset
         self.center = self.fp._position.heading
@@ -688,4 +695,9 @@ class YawJiggle(BTNode):
         traj_sp.yaw = self.center + self.overshoot_target
         traj_sp.yawspeed = self.overshoot_rate
         self.blackboard["traj_sp_pub_req"] = True
+
+        if self.duration is not None and time.time() - self.node_start_time >= self.duration:
+            self.status = STATUS.SUCCESS
+            return self.status
+
         return STATUS.RUNNING
