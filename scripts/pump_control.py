@@ -60,7 +60,7 @@ class PumpControl(Node):
             ManualControlSetpoint, "/fmu/out/manual_control_setpoint", self.manual_input_callback, QoSPresetProfiles.SENSOR_DATA.value,
         )
 
-        self.pass_through_enabled = False
+        self.pass_through_enabled = True
 
         self.total_pump_time = 0.0
         self.total_pump_time_primed = 0.0
@@ -89,21 +89,23 @@ class PumpControl(Node):
         self.jiggle_servo_rate = 4 * self.max_jiggle * self.jiggle_freq * self.control_rate
 
     def pump_callback(self, msg):
-        time_ms = msg.data
-        if time_ms == 0:
-            self.current_pump_val = self.pump_off_val
-            self.pump_off_time = 0.0
-        else:
-            self.current_pump_val = self.pump_on_val
-            self.jiggle_servo_val = 0
-            self.pump_off_time = (
-                self.get_clock().now().nanoseconds / 1e9 + time_ms / 1000.0
-            )
+        if not self.pass_through_enabled:
+            time_ms = msg.data
+            if time_ms == 0:
+                self.current_pump_val = self.pump_off_val
+                self.pump_off_time = 0.0
+            else:
+                self.current_pump_val = self.pump_on_val
+                self.jiggle_servo_val = 0
+                self.pump_off_time = (
+                    self.get_clock().now().nanoseconds / 1e9 + time_ms / 1000.0
+                )
 
     def servo_callback(self, msg):
-        angle = msg.data
-        angle = max(min(angle, self.max_angle), -self.max_angle)
-        self.current_servo_val = angle / self.max_angle
+        if not self.pass_through_enabled:
+            angle = msg.data
+            angle = max(min(angle, self.max_angle), -self.max_angle)
+            self.current_servo_val = angle / self.max_angle
 
     def reset_timers_callback(self, request, response):
         self.total_pump_time = 0.0
