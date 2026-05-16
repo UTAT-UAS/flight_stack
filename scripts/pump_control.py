@@ -7,8 +7,6 @@ from std_msgs.msg import Int32, Float32, Bool
 from px4_msgs.msg import ActuatorServos, ManualControlSetpoint, VehicleCommand
 from std_srvs.srv import SetBool, Empty
 import time
-import struct
-from pymavlink import mavutil
 
 
 class PumpControl(Node):
@@ -41,11 +39,6 @@ class PumpControl(Node):
             Int32, "/set_servo_angle", self.servo_callback, 10
         )
 
-        self.mav_conn = mavutil.mavlink_connection('udp:127.0.0.1:14540')
-        print("waiting heartbeat")
-        self.mav_conn.wait_heartbeat()
-        print(f"Heartbeat from system {self.mav_conn.target_system} component {self.mav_conn.target_component}")
-
         # Publisher for VehicleCommand (DO_SET_ACTUATOR)
         self.vehicle_command_pub = self.create_publisher(
             VehicleCommand, "/fmu/in/vehicle_command", 10
@@ -67,9 +60,7 @@ class PumpControl(Node):
             ManualControlSetpoint, "/fmu/out/manual_control_setpoint", self.manual_input_callback, QoSPresetProfiles.SENSOR_DATA.value,
         )
 
-        self.servo_jiggle_toggle_sub = self.create_subscription(
-            Bool, "/uas/pump/servo_jiggle_toggle", self.servo_jiggle_toggle_callback, 10
-        )
+        self.pass_through_enabled = False
 
         self.total_pump_time = 0.0
         self.total_pump_time_primed = 0.0
@@ -88,7 +79,6 @@ class PumpControl(Node):
         self.pump_off_time = 0.0
 
         self.current_servo_val = 0.0
-        self.servo_jiggle_enabled = False
         self.jiggle_servo_val = 0.0
         self.current_pump_val = self.pump_off_val
 
@@ -123,47 +113,22 @@ class PumpControl(Node):
             self.firing_start_time = now
         return response
 
-    def servo_jiggle_toggle_callback(self, msg):
-        self.servo_jiggle_enabled = msg.data
-        self.jiggle_servo_val = 0.0
-
     def manual_input_callback(self, msg: ManualControlSetpoint):
-        self.manual_firing = (msg.aux4 >= 0.8)
+        if self.pass_through_enabled:
+            self.manual_firing = (msg.aux4 >= 0.8)
+            self.current_servo_val = msg.aux3
+        else:
+            self.manual_firing = False
 
     def toggle_peripheral_callback(self, request, response):
+        self.pass_through_enabled = request.data
         if request.data:
-            self.get_logger().info("Toggling PWM_MAIN_FUNC1 to 301 and PWM_MAIN_FUNC3 to 302.")
-            self.mav_conn.mav.param_set_send(
-                self.mav_conn.target_system, self.mav_conn.target_component,
-                b'PWM_MAIN_FUNC1',
-                struct.unpack('<f', struct.pack('<i', 301))[0],
-                mavutil.mavlink.MAV_PARAM_TYPE_INT32
-            )
-            self.mav_conn.mav.param_set_send(
-                self.mav_conn.target_system, self.mav_conn.target_component,
-                b'PWM_MAIN_FUNC3',
-                struct.unpack('<f', struct.pack('<i', 302))[0],
-                mavutil.mavlink.MAV_PARAM_TYPE_INT32
-            )
-            response.success = True
-            response.message = "Enabled peripheral (Actuator) mode"
+            self.get_logger().info("Enabled RC AUX pass-through mode.")
+            response.message = "Enabled RC AUX pass-through mode"
         else:
-            self.get_logger().info("Toggling PWM_MAIN_FUNC1 to 409 and PWM_MAIN_FUNC3 to 410.")
-            self.mav_conn.mav.param_set_send(
-                self.mav_conn.target_system, self.mav_conn.target_component,
-                b'PWM_MAIN_FUNC1',
-                struct.unpack('<f', struct.pack('<i', 409))[0],
-                mavutil.mavlink.MAV_PARAM_TYPE_INT32
-            )
-            self.mav_conn.mav.param_set_send(
-                self.mav_conn.target_system, self.mav_conn.target_component,
-                b'PWM_MAIN_FUNC3',
-                struct.unpack('<f', struct.pack('<i', 410))[0],
-                mavutil.mavlink.MAV_PARAM_TYPE_INT32
-            )
-            response.success = True
-            response.message = "Enabled RC AUX mode"
-
+            self.get_logger().info("Disabled RC AUX pass-through mode.")
+            response.message = "Disabled RC AUX pass-through mode"
+        response.success = True
         return response
 
     def publish_controls(self):
@@ -190,9 +155,11 @@ class PumpControl(Node):
         if self.is_firing:
             current_firing_time = now - self.firing_start_time
             current_firing_time_primed = max(0.0, current_firing_time - self.prime_time)
-            if self.servo_jiggle_enabled:
+            if not self.pass_through_enabled:
                 self.jiggle_servo_val += self.jiggle_servo_rate
                 self.jiggle_servo_rate = -self.jiggle_servo_rate if abs(self.jiggle_servo_val) >= self.max_jiggle else self.jiggle_servo_rate
+            else:
+                self.jiggle_servo_val = 0.0
 
         msg_time = Float32()
         msg_time.data = float(self.total_pump_time + current_firing_time)
