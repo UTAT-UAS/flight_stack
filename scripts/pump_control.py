@@ -2,6 +2,7 @@
 
 import rclpy
 from rclpy.node import Node
+from rclpy.qos import QoSPresetProfiles
 from std_msgs.msg import Int32, Float32, Bool
 from px4_msgs.msg import ActuatorServos, ManualControlSetpoint, VehicleCommand
 from std_srvs.srv import SetBool, Empty
@@ -63,7 +64,7 @@ class PumpControl(Node):
         self.time_primed_pub = self.create_publisher(Float32, "/uas/pump/time_primed", 10)
 
         self.manual_sub = self.create_subscription(
-            ManualControlSetpoint, "/fmu/out/manual_control_input", self.manual_input_callback, 10
+            ManualControlSetpoint, "/fmu/out/manual_control_setpoint", self.manual_input_callback, QoSPresetProfiles.SENSOR_DATA.value,
         )
 
         self.servo_jiggle_toggle_sub = self.create_subscription(
