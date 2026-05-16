@@ -9,6 +9,7 @@ from flight_stack.pather import trajectory
 from flight_stack_msgs.srv import CoreCommand
 from px4_msgs.msg import GotoSetpoint, VehicleStatus, TrajectorySetpoint, VehicleAttitudeSetpoint
 from std_msgs.msg import Int32
+from flight_stack_msgs.srv import SaveFrame
 
 from .utils import BTNode, STATUS
 
@@ -644,7 +645,7 @@ class MoveToTarget(BTNode):
 
 
 class ShootWhenCentered(BTNode):
-    def __init__(self, name, threshold=10.0, wait_time=3.0, pump_time=2000):
+    def __init__(self, name, threshold=40.0, wait_time=3.0, pump_time=2000):
         super().__init__(name)
         self.threshold = threshold
         self.wait_time = wait_time
@@ -733,3 +734,61 @@ class YawJiggle(BTNode):
         self.blackboard["traj_sp_pub_req"] = True
 
         return STATUS.RUNNING
+
+class UploadLatestFrame(BTNode):
+    def __init__(self, name, initial_delay=0.0):
+        super().__init__(name)
+        self.initial_delay = initial_delay
+        self.client_save = None
+        self.client_upload = None
+        self.future_save = None
+        self.future_upload = None
+        self.start_time = None
+        self.state = "DELAY"
+
+    def setup(self, blackboard, fp):
+        super().setup(blackboard, fp)
+        self.client_save = self.fp.create_client(SaveFrame, "/uas/cv/save_frame")
+        self.client_upload = self.fp.create_client(SaveFrame, "/uas/cv/upload_frame")
+        
+    def initialize(self):
+        super().initialize()
+        self.start_time = time.time()
+        self.state = "DELAY"
+        self.future_save = None
+        self.future_upload = None
+
+    def tick(self):
+        if self.state == "DELAY":
+            if time.time() - self.start_time >= self.initial_delay:
+                self.state = "SAVE"
+                if not self.client_save.wait_for_service(timeout_sec=0.5):
+                    print("save_frame service not available!")
+                    return STATUS.FAILURE
+                req = SaveFrame.Request()
+                req.frame_id = 0
+                self.future_save = self.client_save.call_async(req)
+            return STATUS.RUNNING
+
+        elif self.state == "SAVE":
+            if self.future_save is not None and self.future_save.done():
+                result = self.future_save.result()
+                if not result.success:
+                    print(f"Failed to save frame: {result.message}")
+                    return STATUS.FAILURE
+                
+                self.state = "UPLOAD"
+                if not self.client_upload.wait_for_service(timeout_sec=0.5):
+                    print("upload_frame service not available!")
+                    return STATUS.FAILURE
+                req_up = SaveFrame.Request()
+                req_up.frame_id = result.frame_id  # Use specific frame acquired from save
+                self.future_upload = self.client_upload.call_async(req_up)
+            return STATUS.RUNNING
+
+        elif self.state == "UPLOAD":
+            if self.future_upload is not None and self.future_upload.done():
+                return STATUS.SUCCESS
+            return STATUS.RUNNING
+        
+        return STATUS.FAILURE
