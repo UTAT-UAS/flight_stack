@@ -2,6 +2,9 @@
 
 import numpy as np
 
+from std_msgs.msg import Float32
+from rclpy.qos import QoSPresetProfiles
+
 class CurrentController():
 
     def __init__(self, start_time=None, initial_capacity_consumed=None):
@@ -9,16 +12,17 @@ class CurrentController():
         # outer loop vars
         self.start_time = start_time
         self.initial_capacity_consumed = initial_capacity_consumed
-        self.target_current_draw = 28.0 # input of outer loop
+        self.target_current_draw = 50.0 # input of outer loop
         self.target_ah = 0.0
         self.discharged_ah_corrected = 0.0
         self.current_setpoint = self.target_current_draw   # Output of outer loop, defaults to 60A 
-        self.max_current = 45.0
-        self.min_current = 15.0
+        self.max_current = 65.0
+        self.min_current = 25.0
         self.base_ff_speed = self.get_feedforward_velocity(self.current_setpoint)
         self.typical_cruise_spd = self.base_ff_speed
 
         self.kp_outer = 30.0  # Amps to adjust per Ah error
+        self.outer_current_override = None
 
         # inner loop vars
         self.target_spd = 0.0  # Output of inner loop
@@ -35,7 +39,6 @@ class CurrentController():
         # timers
         self.inner_dt = 0.01  # 100 Hz 
         self.outer_dt = 0.1  # 10 Hz
-
 
     def get_feedforward_velocity(self, target_current: float) -> float:
         """
@@ -106,6 +109,8 @@ class CurrentController():
 
         # clamp current setpoint to safe limits
         self.current_setpoint = max(self.min_current, min(commanded_current, self.max_current))
+        if self.outer_current_override is not None:
+            self.current_setpoint = self.outer_current_override
 
         # update feedforward velocity based on new current setpoint
         self.base_ff_speed = self.get_feedforward_velocity(self.current_setpoint)
