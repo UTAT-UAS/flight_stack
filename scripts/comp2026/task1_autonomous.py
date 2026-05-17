@@ -4,7 +4,7 @@ from std_msgs.msg import Float32, Bool
 import rclpy
 from flight_stack.flight_stack import FlightPlanner
 from flight_stack.pather import trajectory
-from flight_stack.btree.actions import MinJerkTraj
+from flight_stack.btree.actions import MinJerkTraj, SetOffboard
 from flight_stack.btree.manager import BehaviorTree
 from flight_stack.btree import utils
 from px4_msgs.msg import VehicleLocalPosition, BatteryStatus, TrajectorySetpoint, OffboardControlMode
@@ -133,13 +133,13 @@ class MinJerkLaps(utils.BTNode):
         self.duration = 0
         self.ingress = ingress
         self.ingress_len = 0
+        self.ingress_duration = 0
         self.ingress_removed = False
         self.traj = None
         self.traj_sp = TrajectorySetpoint()
         self.traj_sp.yaw = math.nan
         self.traj_sp.yawspeed = math.nan
         self.again = True
-        self.again_override = None
 
         # restrict path jumping
         self.leg = 0
@@ -157,11 +157,10 @@ class MinJerkLaps(utils.BTNode):
         self.powers = []
 
     def remove_ingress(self):
-        ingress_duration = self.subdurations[self.ingress_len]
-        self.pathtime -= ingress_duration
+        self.pathtime -= self.ingress_duration
         self.leg -= self.ingress_len
-        self.duration -= ingress_duration
-        self.subdurations = [x - ingress_duration for x in self.subdurations[self.ingress_len:]]
+        self.duration -= self.ingress_duration
+        self.subdurations = [x - self.ingress_duration for x in self.subdurations[self.ingress_len:]]
         self.traj = self.lap
         self.ingress_removed = True
 
@@ -177,6 +176,7 @@ class MinJerkLaps(utils.BTNode):
             self.ingress_len += 1
             self.duration += traj_iter.duration
             self.subdurations.append(self.subdurations[-1] + traj_iter.duration)
+        self.ingress_duration = self.subdurations[-1]
 
         traj_iter.next = self.lap
         while traj_iter.next != None:
@@ -222,8 +222,9 @@ class MinJerkLaps(utils.BTNode):
                 closest_dist = dist
                 closest = t
         
-        if self.pathtime < 5:
-            self.again_override = None  # reset after each lap
+        if not self.ingress_removed and self.leg > self.ingress_len + 2:
+            self.remove_ingress()
+
         return closest
 
     def position(self) -> np.ndarray:
@@ -281,7 +282,6 @@ class MinJerkLaps(utils.BTNode):
         return sum_v_x/len(self.powers), sum_v_y/len(self.powers)
 
     def tick(self):
-        self.again = self.blackboard.get("again", True)
         if not self.again and (self.pathtime > self.duration - self.project_ahead or self.pathtime < self.project_ahead):
             self.traj_sp.position = list(self.traj.path(self.duration))
             self.traj_sp.velocity = [0.0, 0.0, 0.0]
@@ -340,10 +340,10 @@ class CruiseNode(FlightPlanner):
         )
 
         # override lap decision
-        self._lap_override_subscriber = self.create_subscription(
+        self._stop_laps_subscriber = self.create_subscription(
             Bool,
-            "task1/lap_override",
-            self._lap_override_cb,
+            "task1/stop_laps",
+            self._stop_laps_cb,
             QoSPresetProfiles.SENSOR_DATA.value,
         )
 
@@ -433,6 +433,9 @@ class CruiseNode(FlightPlanner):
         self.inner_timer = self.create_timer(self.cc.inner_dt, self._inner_cb)
         self.outer_timer = self.create_timer(self.cc.outer_dt, self._outer_cb)
 
+        req_offboard = SetOffboard(name="request_offboard", fp=self)
+        req_offboard.tick()  # request offboard mode immediately
+
         # stop the startup timer
         self._startup_timer.cancel()
         self._startup_timer = None
@@ -471,14 +474,13 @@ class CruiseNode(FlightPlanner):
         lap_paths = lap.generate_lap(wp0_off_x, wp0_off_y, wp0_off_z)
         
         cur_pos = np.array([curr_x, curr_y, curr_z])
-        ingress = trajectory.Line(start=cur_pos, end=lap.waypoints[0], duration=np.linalg.norm(lap.waypoints[0] - cur_pos))
+        ingress = trajectory.Line(start=cur_pos, end=lap.overshoot_points[1], duration=np.linalg.norm(lap.overshoot_points[1] - cur_pos))
         lap_paths.insert(0, ingress)
 
         return lap_paths
 
     def _initialize_minjerk_controller(self):
         ''' set up min jerk trajectory '''
-        x, y, z = self._position.x, self._position.y, self._position.z
         paths = self.get_lap_paths()
         print("hi")
         self.ingress = paths[0]
@@ -526,8 +528,8 @@ class CruiseNode(FlightPlanner):
         # calculate velocity magnitude from xy vectors
         self.drone_vel_mag = math.sqrt(msg.vx**2 + msg.vy**2)
 
-    def _lap_override_cb(self, msg: Bool) -> None:
-        self.mj.again_override = msg.data
+    def _stop_laps_cb(self, msg: Bool) -> None:
+        self.mj.again = not bool(msg.data)
 
     def _outer_override_cb(self, msg: Float32) -> None:
         self.cc.outer_current_override = msg.data if msg.data > 0.0 else None
@@ -555,19 +557,19 @@ class CruiseNode(FlightPlanner):
 
         self.cc.outer_capacity_ctrl(self.capacity_consumed, self.get_clock().now().nanoseconds / 1e9)
 
-        self.get_logger().info(f"Current Draw: {self.current_draw:.2f} A, Commanded Current: {self.cc.current_setpoint:.2f} A, FF Vel: {self.cc.base_ff_speed:.2f} m/s\nTarget Ah: {self.cc.target_ah:.3f} Ah, Consumed Ah: {self.cc.discharged_ah_corrected:.3f} Ah, Ah Error: {self.cc.target_ah - self.cc.discharged_ah_corrected:.3f} Ah, Cruise Speed target: {self.target_cruise_spd:.3f}, MinJerk Speed target: {self.target_min_jerk_spd:.3f}")
+        self.get_logger().info(f"Pathtime: {self.mj.pathtime}, Current Draw: {self.current_draw:.2f} A, Commanded Current: {self.cc.current_setpoint:.2f} A, FF Vel: {self.cc.base_ff_speed:.2f} m/s\nTarget Ah: {self.cc.target_ah:.3f} Ah, Consumed Ah: {self.cc.discharged_ah_corrected:.3f} Ah, Ah Error: {self.cc.target_ah - self.cc.discharged_ah_corrected:.3f} Ah, Cruise Speed target: {self.target_cruise_spd:.3f}, MinJerk Speed target: {self.target_min_jerk_spd:.3f}")
 
     def _inner_cb(self):
         if self.cc is None:
             return  # controller not initialized yet
 
         # check for completion
-        distance_flown = self.mj.laps_completed * self.mj.duration + self.mj.pathtime + (self.ingress_duration if self.mj.ingress_removed else 0)
+        distance_flown = self.mj.laps_completed * self.mj.duration + self.mj.pathtime + (self.mj.ingress_duration if self.mj.ingress_removed else 0)
         if distance_flown > 200:
-            projected_cap_used = self.cc.discharged_ah_corrected + (self.cc.discharged_ah_corrected / distance_flown) * (self.mj.duration - self.mj.pathtime)
-            self.mj.again = projected_cap_used < self.ah_limit
-            self.get_logger().info(f"Continue laps: {self.mj.again}, Predicted laps: {self.ah_limit / (self.cc.discharged_ah_corrected / distance_flown) / self.mj.duration:.2f}")
-        self.mj.again = self.mj.again_override if self.mj.again_override is not None else self.mj.again
+            projected_cap_used = self.cc.discharged_ah_corrected + (self.cc.discharged_ah_corrected / distance_flown) * (2*self.mj.duration - self.mj.pathtime)
+            self.get_logger().info(f"Predicted laps: {self.ah_limit / (self.cc.discharged_ah_corrected / distance_flown) / self.mj.duration:.2f}")
+            if projected_cap_used > self.ah_limit:
+                self.get_logger().warn(f"Projected Ah after next lap: {projected_cap_used:.3f} Ah, which is < {self.ah_limit}Ah limit. Consider concluding.")
         if not self.mj.again and (self.mj.pathtime > self.mj.duration - self.mj.project_ahead):
             self.get_logger().info("Path completed")
             self.inner_timer.cancel()
