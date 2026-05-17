@@ -94,9 +94,11 @@
         <spherical_coordinates>
             <surface_model>EARTH_WGS84</surface_model>
             <world_frame_orientation>ENU</world_frame_orientation>
-            <latitude_deg>43.781679784533324</latitude_deg>
-            <longitude_deg>-79.46643354313049</longitude_deg>
-            <elevation>185</elevation>
+            <!--<latitude_deg>43.781679784533324</latitude_deg>
+            <longitude_deg>-79.46643354313049</longitude_deg>-->
+            <latitude_deg>44.02762778</latitude_deg>
+            <longitude_deg>-79.53671944</longitude_deg>
+            <elevation>307.81</elevation>
         </spherical_coordinates>
 
     </world>
