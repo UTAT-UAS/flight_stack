@@ -4,7 +4,7 @@ from std_msgs.msg import Float32, Bool
 import rclpy
 from flight_stack.flight_stack import FlightPlanner
 from flight_stack.pather import trajectory
-from flight_stack.btree.actions import MinJerkTraj, SetOffboard
+from flight_stack.btree.actions import MinJerkTraj, SetOffboard, Land
 from flight_stack.btree.manager import BehaviorTree
 from flight_stack.btree import utils
 from px4_msgs.msg import VehicleLocalPosition, BatteryStatus, TrajectorySetpoint, OffboardControlMode
@@ -220,8 +220,8 @@ class MinJerkLaps(utils.BTNode):
                 self.laps_completed += 1
                 self.leg = self.ingress_len
                 self.pathtime = self.subdurations[self.ingress_len]
-                self.lap_completion = [False for i in range(len(self.subdurations) - 1)]
-                self.lap_completion[0] = True
+                self.lap_completion = [i < self.ingress_len for i in range(len(self.subdurations) - 1)]
+                self.lap_completion[self.leg] = True
 
         closest = self.pathtime
         closest_dist = float('inf')
@@ -317,6 +317,7 @@ class MinJerkLaps(utils.BTNode):
         vx, vy = self.velocity()
         # print(f"{self.name} - Pathtime: {self.pathtime}, Velocity: {vx}, {vy}")
         self.traj_sp.velocity = [vx, vy, 0.0]
+        self.traj_sp.yaw = math.atan2(vy, vx)
         self.fp._traj_publisher.publish(self.traj_sp)
 
         return self.status
@@ -378,6 +379,8 @@ class CruiseNode(FlightPlanner):
         self.traj_sp = TrajectorySetpoint()
         self.target_pos = [0.0, 0.0, 0.0]
         self.target_vel = [0.0, 0.0, 0.0]
+        self.target_yaw = math.nan
+
 
         self.ah_limit = 7.0
 
@@ -425,7 +428,7 @@ class CruiseNode(FlightPlanner):
 
         self.target_pos = [self._position.x, self._position.y, self._position.z]
         self.target_vel = [0.0, 0.0, 0.0]
-        self.traj_sp.yaw = math.nan
+        self.target_yaw = math.nan
         self.traj_sp.yawspeed = math.nan
         self._pub_traj_setpoint()
 
@@ -540,6 +543,7 @@ class CruiseNode(FlightPlanner):
     def _pub_traj_setpoint(self):
         self.traj_sp.position = self.target_pos#[math.nan, math.nan, math.nan]
         self.traj_sp.velocity = self.target_vel
+        self.traj_sp.yaw = self.target_yaw
         #print(self.target_vel)
         self._traj_publisher.publish(self.traj_sp)
 
@@ -550,22 +554,24 @@ class CruiseNode(FlightPlanner):
 
         self.cc.outer_capacity_ctrl(self.capacity_consumed, self.get_clock().now().nanoseconds / 1e9)
 
+        lap_dur = self.mj.duration - self.mj.ingress_duration
+        distance_flown = self.mj.laps_completed * lap_dur + self.mj.pathtime
+        if distance_flown > 200:
+            # predict Ah usage for completing another lap after
+            projected_cap_used = self.cc.discharged_ah_corrected + (self.cc.discharged_ah_corrected / distance_flown) * (2*lap_dur - (self.mj.pathtime - self.mj.ingress_duration))
+            self.get_logger().info(f"Current laps: {self.mj.laps_completed}, Predicted laps: {self.ah_limit / (self.cc.discharged_ah_corrected / distance_flown) / lap_dur:.2f}")
+            if projected_cap_used > self.ah_limit:
+                self.get_logger().warn(f"Projected Ah after next lap: {projected_cap_used:.3f} Ah, which is < {self.ah_limit}Ah limit. Consider concluding.")
+
         self.get_logger().info(f"Pathtime: {self.mj.pathtime}, Current Draw: {self.current_draw:.2f} A, Commanded Current: {self.cc.current_setpoint:.2f} A, FF Vel: {self.cc.base_ff_speed:.2f} m/s\nTarget Ah: {self.cc.target_ah:.3f} Ah, Consumed Ah: {self.cc.discharged_ah_corrected:.3f} Ah, Ah Error: {self.cc.target_ah - self.cc.discharged_ah_corrected:.3f} Ah, Cruise Speed target: {self.target_cruise_spd:.3f}, MinJerk Speed target: {self.target_min_jerk_spd:.3f}")
 
     def _inner_cb(self):
         if self.cc is None:
             return  # controller not initialized yet
 
-        lap_dur = self.mj.duration - self.mj.ingress_duration
-        distance_flown = self.mj.laps_completed * lap_dur + self.mj.pathtime
-
-        if distance_flown > 200:
-            # predict Ah usage for completing another lap after
-            projected_cap_used = self.cc.discharged_ah_corrected + (self.cc.discharged_ah_corrected / distance_flown) * (2*lap_dur - (self.mj.pathtime - self.mj.ingress_duration))
-            self.get_logger().info(f"Predicted laps: {self.ah_limit / (self.cc.discharged_ah_corrected / distance_flown) / lap_dur:.2f}")
-            if projected_cap_used > self.ah_limit:
-                self.get_logger().warn(f"Projected Ah after next lap: {projected_cap_used:.3f} Ah, which is < {self.ah_limit}Ah limit. Consider concluding.")
         # check for completion
+        if self.mj.laps_completed >= 2:
+            self.mj.again = False
         if not self.mj.again and (self.mj.pathtime > self.mj.duration - self.mj.project_ahead):
             self.get_logger().info("Path completed")
             self.inner_timer.cancel()
@@ -576,6 +582,9 @@ class CruiseNode(FlightPlanner):
             self.target_pos = list(self.traj.path(self.mj.duration))
             self.target_vel = [0.0, 0.0, 0.0]
             self._pub_traj_setpoint()
+
+            land = Land(name="land", fp=self)
+            land.tick()
             return
 
         self.target_cruise_spd = self.cc.inner_current_ctrl(self.current_draw, self.drone_vel_mag)
@@ -590,6 +599,7 @@ class CruiseNode(FlightPlanner):
 
         self.target_pos = list(self.mj.position())
         self.target_vel = [vx * self.target_spd / norm, vy * self.target_spd / norm, 0.0]
+        self.target_yaw = math.atan2(vy, vx)
 
 
 def main(args=None):

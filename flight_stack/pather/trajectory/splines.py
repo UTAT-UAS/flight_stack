@@ -243,3 +243,83 @@ class CardinalSpline():
         return cubic_bezier(self.nodes[i - 1], self.nodes[i], t - self.duration[i - 1])
 
     # TODO: add methods for inserting/removing nodes
+
+
+class ClosedCubicBSpline(Trajectory):
+    """
+    C2 continuous closed B-Spline
+    """
+    def __init__(self, nodes: List[np.ndarray], speed: Union[int, float, np.number] = 1):
+        super().__init__()
+        self.speed = speed
+        n = len(nodes)
+
+        # Calculate B-Spline to Bezier control point conversions
+        p_list = []
+        d1_list = []
+        for i in range(n):
+            p_m1 = nodes[(i - 1) % n]
+            p_0  = nodes[i]
+            p_1  = nodes[(i + 1) % n]
+
+            # Bezier junction points (B0)
+            p = (p_m1 + 4 * p_0 + p_1) / 6.0
+            # Bezier control vectors (B1 - B0)
+            d1 = (p_1 - p_m1) / 6.0
+
+            p_list.append(p)
+            d1_list.append(d1)
+
+        # Duplicate the first point at the end to close the mathematical loop
+        p_list.append(p_list[0])
+        d1_list.append(d1_list[0])
+
+        self.t_nodes = [0.0] * (n + 1)
+        for i in range(1, n + 1):
+            self.t_nodes[i] = self.t_nodes[i - 1] + np.linalg.norm(p_list[i] - p_list[i - 1]) / speed
+
+        self.nodes = [SplineNode(p_list[i], -d1_list[i], d1_list[i], self.t_nodes[i+1] - self.t_nodes[i]) for i in range(n)]
+        self.nodes.append(SplineNode(p_list[-1], -d1_list[-1], d1_list[-1], 0))
+
+        self.duration = self.t_nodes[-1]
+        self.next = None
+
+        self.path = self._path
+        self.velocity = self._velocity
+
+    def _path(self, t: Union[int, float, np.number]):
+        t = t % self.duration
+        i = bisect_right(self.t_nodes, t)
+        if i == 0: 
+            i = 1
+        if i >= len(self.t_nodes):
+            return self.nodes[-1].p
+        return cubic_bezier(self.nodes[i - 1], self.nodes[i], t - self.t_nodes[i - 1])
+
+    def _velocity(self, t: Union[int, float, np.number]):
+        """Exact analytical derivative for the MinJerk solver."""
+        t = t % self.duration
+        i = bisect_right(self.t_nodes, t)
+        if i == 0: 
+            i = 1
+        if i >= len(self.t_nodes): 
+            i = len(self.t_nodes) - 1
+
+        node_a = self.nodes[i - 1]
+        node_b = self.nodes[i]
+
+        c = node_a.p + node_a.d1
+        b2 = node_b.p + node_b.d0
+
+        seg_dur = node_a.duration
+        if seg_dur == 0:
+            return np.zeros_like(node_a.p)
+
+        u = (t - self.t_nodes[i - 1]) / seg_dur
+
+        # dP/du Bezier derivative
+        dp_du = 3 * (1 - u)**2 * node_a.d1 + \
+                6 * (1 - u) * u * (b2 - c) + \
+                3 * u**2 * (-node_b.d0)
+
+        return dp_du / seg_dur
