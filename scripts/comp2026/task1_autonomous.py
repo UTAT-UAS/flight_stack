@@ -125,7 +125,7 @@ class CurrentController():
 
 
 class MinJerkLaps(utils.BTNode):
-    def __init__(self, name, fp:FlightPlanner, lap:trajectory.Trajectory, ingress:trajectory.Trajectory, target_vel:float, forecast_time:float, resolution:float=0.1, project_ahead:float=0.1):
+    def __init__(self, name, fp:FlightPlanner, lap:trajectory.Trajectory, ingress:trajectory.Trajectory, target_vel:float, forecast_time:float, resolution:float=0.01, project_ahead:float=0.1):
         super().__init__(name)
         self.fp = fp
         self.lap = lap
@@ -210,7 +210,7 @@ class MinJerkLaps(utils.BTNode):
         self.leg = 0
 
     def projection(self) -> float:
-        resolution = 0.1
+        resolution = 0.01
         if self.pathtime >= self.subdurations[self.leg + 1] - resolution + 0.001: 
             if self.leg < len(self.subdurations) - 2:
                 self.leg += 1
@@ -327,6 +327,9 @@ class CruiseNode(FlightPlanner):
 
     def __init__(self):
         super().__init__()
+        
+        self.MAX_ACC = 3.57 # 20deg tilt
+        self.TURN_RADIUS = 10  # m, based on lap generator overshoot radius
 
         # subscribers
 
@@ -472,10 +475,11 @@ class CruiseNode(FlightPlanner):
         wp0_off_y = dist_e
         wp0_off_z = curr_z  # maintain current altitude
         
-        lap_paths = lap.generate_lap(wp0_off_x, wp0_off_y, wp0_off_z)
+        turn_v_ratio = min((self.MAX_ACC / self.TURN_RADIUS)**0.5 / self.cc.base_ff_speed, 1.0)
+        lap_paths = lap.generate_lap(wp0_off_x, wp0_off_y, wp0_off_z, turn_v_ratio=turn_v_ratio)
         
         cur_pos = np.array([curr_x, curr_y, curr_z])
-        ingress = trajectory.Line(start=cur_pos, end=lap.overshoot_points[1], duration=np.linalg.norm(lap.overshoot_points[1] - cur_pos))
+        ingress = trajectory.Line(start=cur_pos, end=lap.overshoot_points[0], duration=np.linalg.norm(lap.overshoot_points[0] - cur_pos))
         lap_paths.insert(0, ingress)
 
         return lap_paths
@@ -593,6 +597,7 @@ class CruiseNode(FlightPlanner):
         vx, vy = self.mj.velocity()
         norm = (vx**2 + vy**2)**0.5
         self.target_min_jerk_spd = norm * 1.1 * self.cc.typical_cruise_spd / self.mj.target_vel # 10% wiggle room for cruise controller
+        vx, vy, vz = self.mj.traj.velocity(self.mj.eval_time(self.mj.pathtime + self.mj.project_ahead))
 
         # allocator function
         self.target_spd = min(self.target_cruise_spd, self.target_min_jerk_spd)

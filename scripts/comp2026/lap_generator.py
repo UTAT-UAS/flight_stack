@@ -170,19 +170,20 @@ def generate_lap(waypoints_local: List[np.ndarray]) -> List[str]:
         angle = get_angle(waypoints_local[i-1], waypoints_local[i], waypoints_local[(i+1) % len(waypoints_local)])
         turn_angles.append(angle)
 
-    #trajectories = []
-    #for i in range(len(overshoot_points)):
-    #    wpi = i // 2
-    #    if i % 2 == 0: # arc
-    #        #trajectory.Circle(start=overshoot_points[i], center=waypoints_local[wpi], cycles=turn_angles[wpi] / 2 / math.pi, axis=np.array([0,0,windings[wpi]]), speed=1)
-    #        trajectories.append(f"trajectory.Circle(start=overshoot_points[{i}], center=waypoints[{wpi}], cycles={abs(turn_angles[wpi]) / 2 / math.pi}, axis=np.array([0,0,{windings[wpi]}]), speed=1),\n")
-    #    else:
-    #        #trajectory.Line(start=overshoot_points[i], end=overshoot_points[i+1], duration={np.norm(overshoot_points[i+1] - overshoot_points[i])})
-    #        trajectories.append(f"trajectory.Line(start=overshoot_points[{i}], end=overshoot_points[{(i+1) % len(overshoot_points)}], duration={np.linalg.norm(overshoot_points[(i+1) % len(overshoot_points)] - overshoot_points[i])}),\n")
-    #trajectories = trajectories[1:] + trajectories[:1]  # start with line, end with closing arc
-    trajectories = [
-        "trajectory.ClosedCubicBSpline(nodes=overshoot_points, speed=1),\n"
-    ]
+
+    overshoot_points = overshoot_points[1:] + overshoot_points[:1]
+    trajectories = []
+    for i in range(len(overshoot_points)):
+        wpi = ((i + 1) // 2) % len(waypoints_local)
+        if i % 2 == 1: # arc
+            #trajectory.Circle(start=overshoot_points[i], center=waypoints_local[wpi], cycles=turn_angles[wpi] / 2 / math.pi, axis=np.array([0,0,windings[wpi]]), speed=1)
+            trajectories.append(f"trajectory.Circle(start=overshoot_points[{i}], center=waypoints[{wpi}], cycles={abs(turn_angles[wpi]) / 2 / math.pi}, axis=np.array([0,0,{windings[wpi]}]), speed=turn_v_ratio),\n")
+        else:
+            #trajectory.Line(start=overshoot_points[i], end=overshoot_points[i+1], duration={np.norm(overshoot_points[i+1] - overshoot_points[i])})
+            trajectories.append(f"trajectory.Line(start=overshoot_points[{i}], end=overshoot_points[{(i+1) % len(overshoot_points)}], duration={np.linalg.norm(overshoot_points[(i+1) % len(overshoot_points)] - overshoot_points[i])}),\n")
+    #trajectories = [
+    #    "trajectory.ClosedCubicBSpline(nodes=overshoot_points, speed=1),\n"
+    #]
     return overshoot_points, trajectories
 
 def main():
