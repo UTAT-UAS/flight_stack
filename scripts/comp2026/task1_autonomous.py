@@ -4,13 +4,16 @@ from std_msgs.msg import Float32, Bool
 import rclpy
 from flight_stack.flight_stack import FlightPlanner
 from flight_stack.pather import trajectory
-from flight_stack.btree.actions import MinJerkTraj, SetOffboard, Land
+from flight_stack.btree.actions import SetOffboard, Land, SetTrajMode
 from flight_stack.btree.manager import BehaviorTree
 from flight_stack.btree import utils
 from px4_msgs.msg import VehicleLocalPosition, BatteryStatus, TrajectorySetpoint, OffboardControlMode
 from rclpy.qos import QoSPresetProfiles
 from flight_stack_msgs.srv import CoreCommand
+
+import lap_generator as lap_generator
 import lap as lap
+from jerk_limited import JerkLimitedTrajectoryManager
 
 
 class CurrentController():
@@ -40,7 +43,6 @@ class CurrentController():
         self.kp_inner = 0.25
         self.ki_inner = 0.0
 
-
         self.last_target_speed = self.base_ff_speed
         self.max_acceleration = 1.0      # m/s^2 
 
@@ -57,269 +59,97 @@ class CurrentController():
         coeffs = [0.00621, -0.1010, 0.4244, 24.7248 - target_current]
         roots = np.roots(coeffs)
         real_roots = roots[np.isreal(roots)].real
-
-        # Pick the first valid positive velocity root
         for r in real_roots:
             if r >= 0:
                 return float(r)
         return 0.0
 
     def inner_current_ctrl(self, current_draw, drone_speed):
-        """Update target velocity based on current tracking error."""
         error = self.current_setpoint - current_draw
         p_term = self.kp_inner * error
 
-        # anti-windup by scaling integral based on how close we are to target vel
-        safe_target_vel = max(self.target_spd, 0.1) # Prevent div by 0
+        safe_target_vel = max(self.target_spd, 0.1) 
         vel_ratio = drone_speed / safe_target_vel
-        vel_ratio = max(0.0, min(vel_ratio, 1.0)) # Clamp between 0 and 1
+        vel_ratio = max(0.0, min(vel_ratio, 1.0)) 
 
         self.stored_integral += (error * self.ki_inner * self.inner_dt) * vel_ratio
-
-        # clamp integral action
         self.stored_integral = max(-self.integral_limit, min(self.stored_integral, self.integral_limit))
 
-        # raw target vel
         self.target_spd = self.base_ff_speed + p_term + self.stored_integral
-        # track typical commanded speed to scale min jerk speed
         a = 0.0001 + 0.0003*vel_ratio*vel_ratio
         self.typical_cruise_spd = a * self.target_spd + (1-a) * self.typical_cruise_spd
 
-        # slew rate limiter to velocity output
         max_delta = self.max_acceleration * self.inner_dt
-        # calculate requested rate of change
         requested_delta = self.target_spd - self.last_target_speed
-        # clamp request
         clamped_delta = max(-max_delta, min(requested_delta, max_delta))
 
-        # publish slewed velocity setpoint
         self.target_spd = self.last_target_speed + clamped_delta
         self.last_target_speed = self.target_spd
 
         return self.target_spd
 
     def outer_capacity_ctrl(self, discharged_ah, current_time):
-        """Update the current setpoint from Ah tracking error."""
         if self.initial_capacity_consumed is None:
             return
 
         elapsed_time_hours = (current_time - self.start_time) / 3600.0
-
-        # Determine how many Ah we SHOULD have burned by this exact millisecond
         self.target_ah = self.target_current_draw * elapsed_time_hours
-
         self.discharged_ah_corrected = discharged_ah - self.initial_capacity_consumed
         ah_error = self.target_ah - self.discharged_ah_corrected
 
-        #  calculate new current to command based on Ah error
         base_current = self.target_current_draw
         commanded_current = base_current + (self.kp_outer * ah_error)
 
-        # clamp current setpoint to safe limits
         self.current_setpoint = max(self.min_current, min(commanded_current, self.max_current))
         if self.outer_current_override is not None:
             self.current_setpoint = self.outer_current_override
 
-        # update feedforward velocity based on new current setpoint
         self.base_ff_speed = self.get_feedforward_velocity(self.current_setpoint)
 
 
-class MinJerkLaps(utils.BTNode):
-    def __init__(self, name, fp:FlightPlanner, lap:trajectory.Trajectory, ingress:trajectory.Trajectory, target_vel:float, forecast_time:float, resolution:float=0.01, project_ahead:float=0.1):
+class JerkLimitedLaps(utils.BTNode):
+    """Drop-in BTNode replacement that hooks into the infinite 1D parametric wrapper."""
+    def __init__(self, name, fp:FlightPlanner, waypoints: list, ingress_start: np.ndarray, ingress_vel: np.ndarray, target_vel:float, max_accel:float, max_jerk:float, nav_acc_rad:float):
         super().__init__(name)
         self.fp = fp
-        self.lap = lap
-        self.pathtime = 0
-        self.duration = 0
-        self.ingress = ingress
-        self.ingress_len = 0
-        self.ingress_duration = 0
-        self.traj = None
-        self.traj_sp = TrajectorySetpoint()
-        self.traj_sp.yaw = math.nan
-        self.traj_sp.yawspeed = math.nan
-        self.again = True
-
-        # restrict path jumping
-        self.leg = 0
-        self.subdurations = []
-        self.lap_completion = []
-        self.laps_completed = 0
-
-        # parameters
-        self.T = forecast_time
+        self.waypoints = waypoints
+        self.ingress_start = ingress_start
+        self.ingress_vel = ingress_vel
         self.target_vel = target_vel
-        self.horizon = self.T * self.target_vel
-        self.resolution = resolution
-        self.project_ahead = project_ahead
-        self.constants = []
-        self.powers = []
 
-    def eval_time(self, t: float) -> float:
-        """Topologically wraps time based on which lap the drone is currently on"""
-        lap_start = self.subdurations[self.ingress_len]
-        lap_dur = self.duration - lap_start
-
-        if t < lap_start:
-            if self.laps_completed == 0:
-                # Lap 1: Looking backward correctly references the Ingress leg
-                return max(0.0, t)
-            else:
-                # Lap 2+: Looking backward wraps to the end of the previous lap
-                return self.duration - ((lap_start - t) % lap_dur)
-        elif t > self.duration:
-            # Looking ahead: Always wraps into the next lap
-            return lap_start + ((t - self.duration) % lap_dur)
-        else:
-            return t
+        self.laps_completed = 0
+        self.pathtime = 0 
+        
+        self.manager = JerkLimitedTrajectoryManager(
+            cruise_speed=target_vel,
+            max_accel=max_accel,
+            max_jerk=max_jerk,
+            nav_acc_rad=nav_acc_rad
+        )
 
     def initialize(self):
         super().initialize()
-        self.ingress_len = 1
-        self.duration = self.ingress.duration
-        self.subdurations = [0, self.ingress.duration]
-
-        traj_iter = self.ingress
-        while traj_iter.next != None:
-            traj_iter = traj_iter.next
-            self.ingress_len += 1
-            self.duration += traj_iter.duration
-            self.subdurations.append(self.subdurations[-1] + traj_iter.duration)
-        self.ingress_duration = self.subdurations[-1]
-
-        traj_iter.next = self.lap
-        while traj_iter.next != None:
-            traj_iter = traj_iter.next
-            self.duration += traj_iter.duration
-            self.subdurations.append(self.subdurations[-1] + traj_iter.duration)
-
-        self.traj = self.ingress
-        self.lap_completion = [False for i in range(len(self.subdurations) - 1)]
-        self.lap_completion[0] = True
-
-        self.constants = [
-            3 * np.array([20/self.T, -8, -12]) / (2*self.T**2),
-            4 * np.array([-30/self.T, 14, 16]) / (2*self.T**3),
-            5 * np.array([12/self.T, -6, -6]) / (2*self.T**4),
-        ]
-        self.powers = [[(-x)**i for i in range(2, 5)] for x in np.arange(-self.T, 0, self.resolution/self.target_vel)]
+        # Initialize in Infinite Looping Mode
+        self.manager.load_mission(self.waypoints, self.ingress_start, self.ingress_vel, is_looping=True)
 
     def reset(self):
         super().reset()
         self.pathtime = 0
-        self.leg = 0
 
-    def projection(self) -> float:
-        resolution = 0.01
-        if self.pathtime >= self.subdurations[self.leg + 1] - resolution + 0.001: 
-            if self.leg < len(self.subdurations) - 2:
-                self.leg += 1
-                self.lap_completion[self.leg] = self.lap_completion[self.leg - 1]
-            else:
-                # Safely loop back to the start of the lap (skipping ingress)
-                self.laps_completed += 1
-                self.leg = self.ingress_len
-                self.pathtime = self.subdurations[self.ingress_len]
-                self.lap_completion = [i < self.ingress_len for i in range(len(self.subdurations) - 1)]
-                self.lap_completion[self.leg] = True
+    def request_stop(self):
+        # Gracefully break the loop and brake perfectly at WP0
+        self.manager.request_stop()
 
-        closest = self.pathtime
-        closest_dist = float('inf')
-        cur_pos = np.array([self.fp._position.x, self.fp._position.y, self.fp._position.z])
+    def is_done(self):
+        return self.manager.is_done
 
-        # binary search instead of linear interpol?
-        search_start = max(self.pathtime - 5, self.subdurations[self.leg])
-        search_end = min(self.pathtime + 5, self.subdurations[self.leg + 1] + resolution / 2)
-        
-        for t in np.arange(search_start, search_end, resolution):
-            pos = self.traj.path(self.eval_time(t))
-            dist = np.linalg.norm(cur_pos - pos)
-            if dist <= closest_dist:
-                closest_dist = dist
-                closest = t
-        
-        return closest
-
-    def position(self) -> np.ndarray:
-        return list(self.traj.path(self.eval_time(self.pathtime + self.project_ahead)))
-
-    def velocity(self) -> tuple[float, float]:
-        """
-        Min Jerk Position interpolation polynomial:
-        c0 = p0
-        c1 = v0
-        c2 = 0.5 a0
-        c3 = (20(pf - p0) - T(8vf + 12v0) - T^2(3a0 - af)) / 2 T^3
-        c4 = (-30(pf - p0) - T(14vf + 16v0) + T^2(3a0 - 2af)) / 2 T^4
-        c5 = (12(pf - p0) - 6T(vf + v0) - T^2(a0 - af)) / 2 T^5
-
-        assumptions:
-        a = 0
-        trajectory has unit velocity
-
-        Returns:
-            float: 0 to target_vel (sometimes very slightly over)
-        """
-
-        sum_v_x = 0
-        sum_v_y = 0
-        lap_start = self.subdurations[self.ingress_len]
-
-        for i, dt in enumerate(np.arange(self.project_ahead, self.horizon + self.project_ahead, self.resolution)):            
-            t1 = self.pathtime + dt
-            t0 = t1 - self.horizon
-
-            if t0 < 0 and self.laps_completed == 0:
-                # smooth spin-up on Lap 0
-                pos0 = self.traj.path(-t0)
-                vel0 = -self.traj.velocity(-t0)
-            else:
-                # Use eval_time to safely wrap backward for all other topologies
-                w_t0 = self.eval_time(t0)
-                pos0 = self.traj.path(w_t0)
-                vel0 = self.traj.velocity(w_t0)
-
-            if t1 > self.duration and not self.again:
-                # Geometric braking on the final approach
-                t_mirror = max(lap_start, self.duration - (t1 - self.duration))
-                pos1 = self.traj.path(t_mirror)
-                vel1 = -self.traj.velocity(t_mirror)
-            else:
-                # Use eval_time to safely wrap forward
-                w_t1 = self.eval_time(t1)
-                pos1 = self.traj.path(w_t1)
-                vel1 = self.traj.velocity(w_t1)
-
-            dpx = pos1[0] - pos0[0]
-            vx0, vx1 = vel0[0], vel1[0]
-
-            dpy = pos1[1] - pos0[1]
-            vy0, vy1 = vel0[1], vel1[1]
-
-            sum_v_x += vx0 + np.dot(np.matmul(self.constants, [dpx, vx1, vx0]), self.powers[i])
-            sum_v_y += vy0 + np.dot(np.matmul(self.constants, [dpy, vy1, vy0]), self.powers[i])
-            
-        return sum_v_x/len(self.powers), sum_v_y/len(self.powers)
+    def update(self, dt, external_speed_limit=None):
+        self.laps_completed = self.manager.laps_completed
+        self.pathtime += dt 
+        return self.manager.update(dt, external_speed_limit)
 
     def tick(self):
-        if not self.again and (self.pathtime > self.duration - self.project_ahead or self.pathtime < self.project_ahead):
-            self.traj_sp.position = list(self.traj.path(self.duration))
-            self.traj_sp.velocity = [0.0, 0.0, 0.0]
-            self.fp._traj_publisher.publish(self.traj_sp)
-            self.status = utils.STATUS.SUCCESS
-            return self.status
-
-        self.pathtime = self.projection()
-        current_spd = (self.fp._position.vx**2 + self.fp._position.vy**2) ** 0.5
-        self.project_ahead = 0.025 + 0.475 * current_spd / self.target_vel
-
-        self.traj_sp.position = self.position()
-        vx, vy = self.velocity()
-        # print(f"{self.name} - Pathtime: {self.pathtime}, Velocity: {vx}, {vy}")
-        self.traj_sp.velocity = [vx, vy, 0.0]
-        self.traj_sp.yaw = math.atan2(vy, vx)
-        self.fp._traj_publisher.publish(self.traj_sp)
-
+        self.status = utils.STATUS.SUCCESS
         return self.status
 
 
@@ -328,72 +158,33 @@ class CruiseNode(FlightPlanner):
     def __init__(self):
         super().__init__()
         
-        self.MAX_ACC = 3.57 # 20deg tilt
-        self.TURN_RADIUS = 10  # m, based on lap generator overshoot radius
+        self.MAX_ACC = 2
+        self.TURN_RADIUS = lap_generator.OVERSHOOT_RADIUS  
 
         # subscribers
 
         # this is for sim only
         self._current_subscriber = self.create_subscription(
-            Float32,
-            "sim/current_draw",
-            self._current_cb,
-            10,
-        )
+            Float32, "sim/current_draw", self._current_cb, 10)
         self._capacity_subscriber = self.create_subscription(
-            Float32,
-            "sim/discharged_mah",
-            self._capacity_cb,
-            10,
-        )
-
-        # real DDS battery stuff
-        #self._battery_subscriber = self.create_subscription(
-        #    BatteryStatus,
-        #    "/fmu/out/battery_status",
-        #    self._battery_cb,
-        #    QoSPresetProfiles.SENSOR_DATA.value,
-        #)
-
-        # local position for velocity feedback
+            Float32, "sim/discharged_mah", self._capacity_cb, 10)
         self._local_pos_subscriber = self.create_subscription(
-            VehicleLocalPosition,
-            "/fmu/out/vehicle_local_position",
-            self._local_pos_cb,
-            QoSPresetProfiles.SENSOR_DATA.value,
-        )
-
-        # override lap decision
+            VehicleLocalPosition, "/fmu/out/vehicle_local_position", self._local_pos_cb, QoSPresetProfiles.SENSOR_DATA.value)
         self._stop_laps_subscriber = self.create_subscription(
-            Bool,
-            "task1/stop_laps",
-            self._stop_laps_cb,
-            QoSPresetProfiles.SENSOR_DATA.value,
-        )
-
-        # outer loop current setpoint override
+            Bool, "task1/stop_laps", self._stop_laps_cb, QoSPresetProfiles.SENSOR_DATA.value)
         self._outer_override_subscriber = self.create_subscription(
-            Float32,
-            "/task1/current_override",
-            self._outer_override_cb,
-            QoSPresetProfiles.SENSOR_DATA.value,
-        )
+            Float32, "/task1/current_override", self._outer_override_cb, QoSPresetProfiles.SENSOR_DATA.value)
 
         self.traj_sp = TrajectorySetpoint()
         self.target_pos = [0.0, 0.0, 0.0]
         self.target_vel = [0.0, 0.0, 0.0]
         self.target_yaw = math.nan
 
-
         self.ah_limit = 7.0
 
         ### Current controller setup ###
-
-        # outer loop vars
         self.capacity_consumed = 0.0
         self.initial_capacity_consumed = None
-
-        # inner loop vars
         self.current_draw = 0.0
         self.drone_vel_mag = 0.0
         self.target_cruise_spd = 0.0
@@ -402,24 +193,20 @@ class CruiseNode(FlightPlanner):
         self.inner_timer = None
         self.outer_timer = None
 
-        # initialize controller
         self._startup_timer = self.create_timer(0.1, self._initialize)
 
         ### Trajectory generation setup ###
         self.mj = None
         self.traj = None
-
-        # min jerk results
         self.target_min_jerk_spd = 0
         self.target_spd = 0
 
-        # timer to publish setpoints
         self._traj_timer = self.create_timer(0.01, self._pub_traj_setpoint)
 
     def _initialize(self):
         if self.initial_capacity_consumed is None:
             self.get_logger().info("Waiting for initial capacity reading...")
-            return  # not ready yet, check again on next timer tick
+            return  
         
         x, y, z = self._position.x, self._position.y, self._position.z
         if x==0 or y==0 or z==0:
@@ -435,18 +222,18 @@ class CruiseNode(FlightPlanner):
         self.traj_sp.yawspeed = math.nan
         self._pub_traj_setpoint()
 
-        # request offboard
         command = CoreCommand.Request()
-        command.request.command = 7 # CORE_TRAJ request command
+        command.request.command = 7 
         self._core_command_client.call_async(command)
 
         self.inner_timer = self.create_timer(self.cc.inner_dt, self._inner_cb)
         self.outer_timer = self.create_timer(self.cc.outer_dt, self._outer_cb)
 
         req_offboard = SetOffboard(name="request_offboard", fp=self)
-        req_offboard.tick()  # request offboard mode immediately
+        req_offboard.tick()
+        set_traj_mode = SetTrajMode(name="set_traj_mode", fp=self)
+        set_traj_mode.tick()
 
-        # stop the startup timer
         self._startup_timer.cancel()
         self._startup_timer = None
 
@@ -454,7 +241,7 @@ class CruiseNode(FlightPlanner):
         start_time = self.get_clock().now().nanoseconds / 1e9
         self.cc = CurrentController(start_time, self.initial_capacity_consumed)
 
-    def get_lap_paths(self):
+    def _initialize_minjerk_controller(self):
         curr_x = self._position.x
         curr_y = self._position.y
         curr_z = self._position.z
@@ -470,36 +257,21 @@ class CruiseNode(FlightPlanner):
         dist_n = delta_lat * R_EARTH
         dist_e = delta_lon * R_EARTH * math.cos(math.radians(drone_lat))
         
-        # wp0's local coordinates
-        wp0_off_x = dist_n
-        wp0_off_y = dist_e
-        wp0_off_z = curr_z  # maintain current altitude
+        offset = np.array([dist_n, dist_e, curr_z])
         
-        turn_v_ratio = min((self.MAX_ACC / self.TURN_RADIUS)**0.5 / self.cc.base_ff_speed, 1.0)
-        lap_paths = lap.generate_lap(wp0_off_x, wp0_off_y, wp0_off_z, turn_v_ratio=turn_v_ratio)
-        
-        cur_pos = np.array([curr_x, curr_y, curr_z])
-        ingress = trajectory.Line(start=cur_pos, end=lap.overshoot_points[0], duration=np.linalg.norm(lap.overshoot_points[0] - cur_pos))
-        lap_paths.insert(0, ingress)
+        # Only pass the base waypoints! No unrolling necessary.
+        transformed_wps = [wp + offset for wp in lap.waypoints]
 
-        return lap_paths
-
-    def _initialize_minjerk_controller(self):
-        paths = self.get_lap_paths()
-        self.ingress = paths[0]
-        for i, traj in enumerate(paths[1:-1]):
-            traj.next = paths[i + 2]
-        self.laptraj = paths[1]
-
-        self.mj = MinJerkLaps(
-            fp=self,
+        self.mj = JerkLimitedLaps(
             name="min_jerk",
-            lap=self.laptraj,
-            ingress=self.ingress,
+            fp=self,
+            waypoints=transformed_wps,
+            ingress_start=np.array([curr_x, curr_y, curr_z]),
+            ingress_vel=np.array([self._position.vx, self._position.vy, self._position.vz]),
             target_vel=self.cc.base_ff_speed,
-            forecast_time=10,
-            resolution=1,
-            project_ahead=0.5
+            max_accel=self.MAX_ACC,
+            max_jerk=1.0,
+            nav_acc_rad=30.0
         )
 
         btree = BehaviorTree("cruise_control_and_curvature_test")
@@ -514,77 +286,71 @@ class CruiseNode(FlightPlanner):
         self.current_draw = self._manual_ema(msg.data, self.current_draw, 0.1)
 
     def _capacity_cb(self, msg: Float32) -> None:
-        self.capacity_consumed = msg.data / 1000.0  # convert mAh to Ah
-        if self.initial_capacity_consumed is None:  # initialize starting point for coulomb counting
+        self.capacity_consumed = msg.data / 1000.0  
+        if self.initial_capacity_consumed is None:  
             self.initial_capacity_consumed = self.capacity_consumed
 
     def _battery_cb(self, msg: BatteryStatus) -> None:
         self.current_draw = self._manual_ema(msg.current_a, self.current_draw, 0.1)
-        self.capacity_consumed = msg.discharged_mah / 1000.0  # Convert to Ah
+        self.capacity_consumed = msg.discharged_mah / 1000.0  
         if self.initial_capacity_consumed is None:
             self.initial_capacity_consumed = self.capacity_consumed
 
     def _local_pos_cb(self, msg: VehicleLocalPosition) -> None:
-        # calculate velocity magnitude from xy vectors
         self.drone_vel_mag = math.sqrt(msg.vx**2 + msg.vy**2)
 
     def _stop_laps_cb(self, msg: Bool) -> None:
-        self.mj.again = not bool(msg.data)
+        # Trigger the brake sequence via the new API
+        if msg.data and hasattr(self, 'mj'):
+            self.mj.request_stop()
 
     def _outer_override_cb(self, msg: Float32) -> None:
         self.cc.outer_current_override = msg.data if msg.data > 0.0 else None
 
-    # def _request_offboard(self):
-    #     offboard_msg = OffboardControlMode()
-    #     offboard_msg.timestamp = int(self.get_clock().now().nanoseconds / 1000)
-    #     offboard_msg.position = False
-    #     offboard_msg.velocity = True 
-    #     offboard_msg.acceleration = False
-    #     offboard_msg.attitude = False
-    #     offboard_msg.body_rate = False
-    #     self._offboard_ctrl_publisher.publish(offboard_msg)
-
     def _pub_traj_setpoint(self):
-        self.traj_sp.position = self.target_pos#[math.nan, math.nan, math.nan]
+        self.traj_sp.position = self.target_pos
         self.traj_sp.velocity = self.target_vel
+        
+        if hasattr(self, 'target_acc'):
+            self.traj_sp.acceleration = self.target_acc
+            
         self.traj_sp.yaw = self.target_yaw
-        #print(self.target_vel)
         self._traj_publisher.publish(self.traj_sp)
 
-    # current controller loops
     def _outer_cb(self):
         if self.cc is None:
-            return  # controller not initialized yet
+            return  
 
         self.cc.outer_capacity_ctrl(self.capacity_consumed, self.get_clock().now().nanoseconds / 1e9)
 
-        lap_dur = self.mj.duration - self.mj.ingress_duration
-        distance_flown = self.mj.laps_completed * lap_dur + self.mj.pathtime
+        distance_flown = self.mj.manager.total_distance_flown
         if distance_flown > 200:
-            # predict Ah usage for completing another lap after
-            projected_cap_used = self.cc.discharged_ah_corrected + (self.cc.discharged_ah_corrected / distance_flown) * (2*lap_dur - (self.mj.pathtime - self.mj.ingress_duration))
-            self.get_logger().info(f"Current laps: {self.mj.laps_completed}, Predicted laps: {self.ah_limit / (self.cc.discharged_ah_corrected / distance_flown) / lap_dur:.2f}")
+            avg_lap_dist = distance_flown / max(1, self.mj.laps_completed)
+            projected_cap_used = self.cc.discharged_ah_corrected + (self.cc.discharged_ah_corrected / distance_flown) * avg_lap_dist
+            self.get_logger().info(f"Current laps: {self.mj.laps_completed}, Predicted laps: {self.ah_limit / (self.cc.discharged_ah_corrected / distance_flown) / avg_lap_dist:.2f}")
             if projected_cap_used > self.ah_limit:
                 self.get_logger().warn(f"Projected Ah after next lap: {projected_cap_used:.3f} Ah, which is < {self.ah_limit}Ah limit. Consider concluding.")
 
-        self.get_logger().info(f"Pathtime: {self.mj.pathtime}, Current Draw: {self.current_draw:.2f} A, Commanded Current: {self.cc.current_setpoint:.2f} A, FF Vel: {self.cc.base_ff_speed:.2f} m/s\nTarget Ah: {self.cc.target_ah:.3f} Ah, Consumed Ah: {self.cc.discharged_ah_corrected:.3f} Ah, Ah Error: {self.cc.target_ah - self.cc.discharged_ah_corrected:.3f} Ah, Cruise Speed target: {self.target_cruise_spd:.3f}, MinJerk Speed target: {self.target_min_jerk_spd:.3f}")
+        self.get_logger().info(f"Pathtime: {self.mj.pathtime:.2f}, Current Draw: {self.current_draw:.2f} A, Commanded Current: {self.cc.current_setpoint:.2f} A, FF Vel: {self.cc.base_ff_speed:.2f} m/s\nTarget Ah: {self.cc.target_ah:.3f} Ah, Consumed Ah: {self.cc.discharged_ah_corrected:.3f} Ah, Ah Error: {self.cc.target_ah - self.cc.discharged_ah_corrected:.3f} Ah, Cruise Speed target: {self.target_cruise_spd:.3f}, MinJerk Speed target: {self.target_min_jerk_spd:.3f}")
 
     def _inner_cb(self):
         if self.cc is None:
-            return  # controller not initialized yet
+            return  
 
-        # check for completion
-        if self.mj.laps_completed >= 2:
-            self.mj.again = False
-        if not self.mj.again and (self.mj.pathtime > self.mj.duration - self.mj.project_ahead):
+        # Replace your arbitrary lap limit with a stop request here if desired
+        if self.mj.laps_completed >= 2: 
+            self.mj.request_stop()
+            
+        if self.mj.is_done():
             self.get_logger().info("Path completed")
             self.inner_timer.cancel()
             self.inner_timer = None
             self.outer_timer.cancel()
             self.outer_timer = None
 
-            self.target_pos = list(self.traj.path(self.mj.duration))
+            self.target_pos = list(self.mj.manager.current_pos)
             self.target_vel = [0.0, 0.0, 0.0]
+            self.target_acc = [0.0, 0.0, 0.0]
             self._pub_traj_setpoint()
 
             land = Land(name="land", fp=self)
@@ -592,20 +358,33 @@ class CruiseNode(FlightPlanner):
             return
 
         self.target_cruise_spd = self.cc.inner_current_ctrl(self.current_draw, self.drone_vel_mag)
-        self.mj.pathtime = self.mj.projection()
 
-        vx, vy = self.mj.velocity()
-        norm = (vx**2 + vy**2)**0.5
-        self.target_min_jerk_spd = norm * 1.1 * self.cc.typical_cruise_spd / self.mj.target_vel # 10% wiggle room for cruise controller
-        vx, vy, vz = self.mj.traj.velocity(self.mj.eval_time(self.mj.pathtime + self.mj.project_ahead))
+        sp_px, sp_py, sp_vx, sp_vy, sp_ax, sp_ay = self.mj.update(self.cc.inner_dt, external_speed_limit=self.target_cruise_spd)
+        
+        norm = (sp_vx**2 + sp_vy**2)**0.5
+        self.target_min_jerk_spd = norm 
+        self.target_spd = norm 
 
-        # allocator function
-        self.target_spd = min(self.target_cruise_spd, self.target_min_jerk_spd)
-
-        self.target_pos = list(self.mj.position())
-        self.target_vel = [vx * self.target_spd / norm, vy * self.target_spd / norm, 0.0]
-        self.target_yaw = math.atan2(vy, vx)
-
+        self.target_pos = [sp_px, sp_py, self.mj.manager.mission_z]
+        self.target_vel = [sp_vx, sp_vy, 0.0]
+        FF_GAIN = 0.7
+        self.target_acc = [sp_ax * FF_GAIN, sp_ay * FF_GAIN, 0.0]
+        
+        if self.target_spd > 0.001:
+            target_yaw = math.atan2(sp_vy, sp_vx)
+            if getattr(self, 'sp_yaw', None) is None:
+                self.sp_yaw = getattr(self._position, 'yaw', getattr(self._position, 'heading', target_yaw))
+                
+            MAX_YAW_RATE = math.radians(45.0)
+            yaw_err = (target_yaw - self.sp_yaw + math.pi) % (2 * math.pi) - math.pi
+            yaw_step = np.clip(yaw_err, -MAX_YAW_RATE * self.cc.inner_dt, MAX_YAW_RATE * self.cc.inner_dt)
+            
+            self.sp_yaw += yaw_step
+            self.sp_yaw = (self.sp_yaw + math.pi) % (2 * math.pi) - math.pi
+            self.target_yaw = self.sp_yaw
+        else:
+            self.target_yaw = math.nan
+            self.sp_yaw = None
 
 def main(args=None):
     rclpy.init(args=args)

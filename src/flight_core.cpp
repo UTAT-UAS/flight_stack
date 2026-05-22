@@ -85,7 +85,7 @@ void FlightCore::publish_offboard_control_mode()
     px4_msgs::msg::OffboardControlMode msg{};
     msg.position = true;
     msg.velocity = true;
-    msg.acceleration = false;
+    msg.acceleration = true;
     msg.attitude = true;
     msg.body_rate = true;
     msg.timestamp = this->get_clock()->now().nanoseconds() / 1000;
