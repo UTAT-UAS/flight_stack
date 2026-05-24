@@ -60,9 +60,9 @@ class BTreeFlightPlanner(FlightPlanner):
                         child=controls.Sequence(
                             name="shoot_sequence",
                             children=[
-                                actions.ShootWhenCentered(name="shoot", threshold=40.0, wait_time=3.0, pump_time=4000),
-                                actions.YawJiggle(name="yaw_jiggle", duration=4.0),
-                                actions.UploadLatestFrame(name="upload_frame", initial_delay=10.0),
+                                actions.ShootWhenCentered(name="shoot", threshold=40.0, wait_time=3.0, pump_time=5000),
+                                actions.YawJiggle(name="yaw_jiggle", duration=5.0),
+                                actions.UploadLatestFrame(name="upload_frame", initial_delay=12.0),
                             ]),
                         k=0.0005,
                         floor_tol=10,
