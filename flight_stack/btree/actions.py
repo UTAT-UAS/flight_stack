@@ -557,6 +557,7 @@ class AdjustFromDetection(BTNode):
         self.blackboard["goto_sp_pub_req"] = True
         self.has_requested = True
         print(f"AdjustFromDetection: Moving to N={new_N:.2f}, E={new_E:.2f}, D={new_D:.2f}, Yaw={new_yaw:.2f}")
+        print(f"Delta: N={delta_N:.2f} E={delta_E:.2f}")
 
         return STATUS.RUNNING
 
@@ -640,6 +641,7 @@ class MoveToTarget(BTNode):
         self.blackboard["goto_sp_pub_req"] = True
         self.has_requested = True
         print(f"MoveToTarget: Moving to N={new_N:.2f}, E={new_E:.2f}, D={new_D:.2f}, Yaw={yaw:.2f} (Delta={delta_L:.2f}m)")
+        print(f"Delta: N={delta_N:.2f} E={delta_E:.2f}")
 
         return self.status
 
